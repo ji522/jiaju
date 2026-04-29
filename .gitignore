@@ -1,0 +1,40 @@
+# IDE
+.vscode/
+*.code-workspace
+
+# Build outputs
+output/
+Project/Objects/
+Project/Listings/
+Project/*.bak
+Project/*.dep
+Project/*.crf
+Project/*.d
+Project/*.o
+Project/*.axf
+Project/*.map
+Project/*.htm
+Project/*.hex
+Project/*.lnp
+
+# Keil user files
+Project/*.uvguix.*
+Project/*.uvoptx
+
+# AI / resume / personal notes
+AI讲解简历与代码/
+resume_text.txt
+resume*.txt
+*简历*
+*身份信息*
+tmp_paths.txt
+summary.txt
+workthrough.md
+walkthrough.md
+troubleshoot_interview_cases.md
+工作简历供ai看的没有身份信息.pdf
+
+# Temp helper files
+*_utf8_temp.c
+driver_*_utf8.c
+driver_*_utf8.h

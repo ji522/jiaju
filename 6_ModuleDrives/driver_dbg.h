@@ -6,7 +6,7 @@
 #ifndef __DRIVER_DBG_H
 #define	__DRIVER_DBG_H
 
-#include "stm32f1xx_hal.h"
+#include "stm32f4xx_hal.h"
 
 /**
  * @brief 初始化供 printf 使用的底层硬件串口(USART1)

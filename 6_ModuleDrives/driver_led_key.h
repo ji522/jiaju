@@ -6,14 +6,14 @@
 #ifndef __DRIVER_LED_KEY_H
 #define __DRIVER_LED_KEY_H
 
-#include "stm32f1xx_hal.h"
+#include "stm32f4xx_hal.h"
 #include "dev_io.h"
 
 /* ==================== LED 硬件宏定义 ==================== */
-/* LED 连接的 GPIO 端口：GPIOA */
-#define LED_PORT	GPIOA
-/* LED 连接的具体引脚编号：Pin 7 */
-#define LED_PIN		GPIO_PIN_7
+/* LED 连接的 GPIO 端口（F407 底板使用 GPIOF Pin 9） */
+#define LED_PORT	GPIOF
+/* LED 连接的具体引脚编号 */
+#define LED_PIN		GPIO_PIN_9
 
 /**
  * @brief 驱动 LED 亮灭状态 (低电平驱动 / 共阳极)
@@ -27,10 +27,10 @@
 #define LED_SHINE()	HAL_GPIO_TogglePin(LED_PORT, LED_PIN)
 
 /* ==================== KEY 硬件宏定义 ==================== */
-/* 按键连接的 GPIO 端口：GPIOB */
-#define KEY_PORT	GPIOB
-/* 按键连接的具体引脚编号：Pin 11 */
-#define KEY_PIN		GPIO_PIN_11
+/* 按键连接的 GPIO 端口（F407 使用 PA0 + EXTI0） */
+#define KEY_PORT	GPIOA
+/* 按键连接的具体引脚编号 */
+#define KEY_PIN		GPIO_PIN_0
 
 /**
  * @brief 获取当前按键引脚电平状态

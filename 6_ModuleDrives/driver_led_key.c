@@ -21,7 +21,7 @@ int Driver_LED_Init(void)
 	/* 配置 LED GPIO 为推挽输出。 */
 	GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-	__HAL_RCC_GPIOA_CLK_ENABLE();
+	__HAL_RCC_GPIOF_CLK_ENABLE();
 
 	GPIO_InitStruct.Pin = LED_PIN;
 	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
@@ -49,7 +49,7 @@ int Driver_Key_Init(void)
 		return -1;
 	}
 
-	__HAL_RCC_GPIOB_CLK_ENABLE();
+	__HAL_RCC_GPIOA_CLK_ENABLE();
 
 	GPIO_InitStruct.Pin = KEY_PIN;
 	GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
@@ -57,15 +57,15 @@ int Driver_Key_Init(void)
 
 	HAL_GPIO_Init(KEY_PORT, &GPIO_InitStruct);
 
-	HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
-	HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+	HAL_NVIC_SetPriority(EXTI0_IRQn, 0, 0);
+	HAL_NVIC_EnableIRQ(EXTI0_IRQn);
 
 	return 0;
 }
 
-void EXTI15_10_IRQHandler(void)
+void EXTI0_IRQHandler(void)
 {
-	/* EXTI15~10 中断统一入口，交给 HAL 分发到回调。 */
+	/* 按键 EXTI0 中断入口，交给 HAL 分发到回调。 */
 	HAL_GPIO_EXTI_IRQHandler(KEY_PIN);
 }
 

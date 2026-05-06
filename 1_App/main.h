@@ -9,6 +9,6 @@
 #define __MAIN_H
 
 /* 引入 STM32F1 系列的 HAL (硬件抽象层) 核心库头文件，几乎所有的 .c 都会间接包含它 */
-#include "stm32f1xx_hal.h"
+#include "stm32f4xx_hal.h"
 
 #endif /* __MAIN_H */

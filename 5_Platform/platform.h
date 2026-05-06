@@ -8,6 +8,6 @@
 #define __PLATFORM_H
 
 /* 引入 STM32F1 系列的 HAL 硬件抽象层总驱动头文件，使其他引用本文件的组件都能识别基础类型和外设 */
-#include "stm32f1xx_hal.h"
+#include "stm32f4xx_hal.h"
 
 #endif

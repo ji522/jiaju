@@ -16,15 +16,17 @@ Project/*.map
 Project/*.htm
 Project/*.hex
 Project/*.lnp
+Project/DebugConfig/
+Project/EventRecorderStub.scvd
 
 # Keil user files
 Project/*.uvguix.*
 Project/*.uvoptx
 
-# AI / resume / personal notes
-AI讲解简历与代码/
-resume_text.txt
+# AI / resume / private materials
+AI*/
 resume*.txt
+*resume*
 *简历*
 *身份信息*
 tmp_paths.txt
@@ -32,9 +34,27 @@ summary.txt
 workthrough.md
 walkthrough.md
 troubleshoot_interview_cases.md
-工作简历供ai看的没有身份信息.pdf
+*.pdf
 
-# Temp helper files
+# Temporary helper files
 *_utf8_temp.c
 driver_*_utf8.c
 driver_*_utf8.h
+
+# Extra study/demo folders and downloaded assets
+9.3*/
+ESP-WROOM-02-AT-V2.2.2.0/
+esp8266/
+*.rar
+ji.html
+rules.md
+c_loop.c
+Debugging MQTT LED Control.md
+
+# Personal notes
+*阅读顺序*.md
+*函数指针*.md
+*改进*.md
+*项目复盘*.md
+*学习指南*.md
+*智能天气遇到的问题*.md

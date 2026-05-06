@@ -7,7 +7,7 @@
 #ifndef __DRIVER_BUFFER_H
 #define __DRIVER_BUFFER_H
 
-#include "stm32f1xx_hal.h"
+#include "stm32f4xx_hal.h"
 
 /**
  * @brief 环形缓冲区控制结构体

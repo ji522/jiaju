@@ -3,7 +3,7 @@
  * @brief 使用 TIM2 重载 HAL 系统节拍，并在 1ms 周期内执行按键消抖处理
  */
 
-#include "stm32f1xx_hal.h"
+#include "stm32f4xx_hal.h"
 /* 按键消抖处理回调，在每个 Tick 中调用一次。 */
 extern void KeyShakeProcess_Callback(void);
 /* HAL Tick 使用的基础定时器句柄。 */

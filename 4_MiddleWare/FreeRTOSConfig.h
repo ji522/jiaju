@@ -3,7 +3,7 @@
 
 /* Here is a good place to include header files that are required across
 your application. */
-#include "stm32f1xx_hal.h"
+#include "stm32f4xx_hal.h"
 
 #define vPortSVCHandler							SVC_Handler
 #define xPortPendSVHandler						PendSV_Handler

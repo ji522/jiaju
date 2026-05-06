@@ -7,7 +7,7 @@
 #ifndef __DRIVER_NET_H
 #define	__DRIVER_NET_H
 
-#include "stm32f1xx_hal.h"
+#include "stm32f4xx_hal.h"
 
 /**
  * @brief 初始化网络模组 (复位 ESP8266，配置 UART2 外设及中断，初始化数据接收环形缓冲区)

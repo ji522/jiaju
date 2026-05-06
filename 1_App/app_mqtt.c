@@ -131,7 +131,7 @@ static void prvMQTTEchoTask(void *pvParameters)
 
 		case RECONN_MQTT_SUB:
 			printf("[MQTT] SUBSCRIBE: %s\r\n", LedTopic);
-			rc = MQTTSubscribe(&client, LedTopic, 0, messageArrived);
+			rc = MQTTSubscribe(&client, LedTopic, QOS0, messageArrived);
 			if(rc == 0)
 			{
 				printf("[MQTT] Subscribe OK, entering RUNNING\r\n");
@@ -153,7 +153,7 @@ static void prvMQTTEchoTask(void *pvParameters)
 				MQTTMessage message;
 				char payload[64];
 
-				message.qos = 0;
+				message.qos = QOS0;
 				message.retained = 0;
 				message.payload = payload;
 				sprintf(payload, "key number %d, Press time:%d ms",

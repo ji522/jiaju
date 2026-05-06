@@ -67,6 +67,7 @@ void FreeRTOS_disconnect(Network*);
 
 void NetworkInit(Network*);
 int NetworkConnect(Network*, char*, int);
+void NetworkDisconnect(Network*);
 /*int NetworkConnectTLS(Network*, char*, int, SlSockSecureFiles_t*, unsigned char, unsigned int, char);*/
 
 #endif

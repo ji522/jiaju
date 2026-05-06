@@ -106,6 +106,14 @@ void FreeRTOS_disconnect(Network* n)
 	n->netdev->Disconnect(n->netdev, (char*)&tcp, 100);
 }
 
+void NetworkDisconnect(Network* n)
+{
+	if(n != NULL && n->disconnect != NULL)
+	{
+		n->disconnect(n);
+	}
+}
+
 /* Local Wi-Fi credentials used by the ESP8266 transport layer. */
 const static WiFiInfo wifi = {WiFi_ID, "iPhone16proMax", "333666999"};
 

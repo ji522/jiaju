@@ -13,6 +13,9 @@
 
 #define CAN_TX_QUEUE_LENGTH 8
 #define CAN_RX_QUEUE_LENGTH 8
+#define CAN_TASK_PERIOD_MS 20U
+#define CAN_HEARTBEAT_PERIOD_MS 5000U
+#define CAN_RX_POLL_TIMEOUT_MS 1U
 
 QueueHandle_t xCanTxQueue = NULL;
 QueueHandle_t xCanRxQueue = NULL;
@@ -83,7 +86,7 @@ void CanTask(void *parameter)
 	uint32_t rx_id = 0;
 	uint8_t rx_data[8] = {0};
 	uint8_t rx_len = 0;
-	TickType_t xLastWakeTime = xTaskGetTickCount();
+	TickType_t xLastHeartbeatTick = xTaskGetTickCount();
 
 	(void)parameter;
 
@@ -127,37 +130,47 @@ void CanTask(void *parameter)
 			}
 		}
 
-		/* 2. Build a periodic heartbeat frame so the node has automotive-like liveness. */
-		prvBuildHeartbeatFrame(&tx_frame);
-		if(Driver_CAN_Send(tx_frame.id, tx_frame.data, tx_frame.dlc) == 0)
+		/* 2. Send heartbeat on a slower cadence without delaying control traffic. */
+		if((xTaskGetTickCount() - xLastHeartbeatTick) >= pdMS_TO_TICKS(CAN_HEARTBEAT_PERIOD_MS))
 		{
-			g_can_tx_count++;
-		}
-		else
-		{
-			g_can_node_mode = CAN_NODE_DEGRADED;
+			xLastHeartbeatTick = xTaskGetTickCount();
+			prvBuildHeartbeatFrame(&tx_frame);
+			if(Driver_CAN_Send(tx_frame.id, tx_frame.data, tx_frame.dlc) == 0)
+			{
+				g_can_tx_count++;
+			}
+			else
+			{
+				g_can_node_mode = CAN_NODE_DEGRADED;
+			}
 		}
 
 		/* 3. Drain loopback or bus RX frames, then mirror them to the RX queue for MQTT uplink. */
-		while(Driver_CAN_Recv(&rx_id, rx_data, &rx_len, 5) == 0)
+		while(Driver_CAN_Recv(&rx_id, rx_data, &rx_len, CAN_RX_POLL_TIMEOUT_MS) == 0)
 		{
 			memset(&rx_frame, 0, sizeof(rx_frame));
 			rx_frame.id = rx_id;
 			rx_frame.dlc = rx_len;
 			memcpy(rx_frame.data, rx_data, rx_len);
 
-			printf("[CAN] RX frame: id=0x%03lX dlc=%u data0=0x%02X\r\n",
-				(unsigned long)rx_frame.id,
-				(unsigned)rx_frame.dlc,
-				(unsigned)rx_frame.data[0]);
+			if(rx_frame.id != CAN_ID_NODE_HEARTBEAT)
+			{
+				printf("[CAN] RX frame: id=0x%03lX dlc=%u data0=0x%02X\r\n",
+					(unsigned long)rx_frame.id,
+					(unsigned)rx_frame.dlc,
+					(unsigned)rx_frame.data[0]);
+			}
 
 			prvHandleReceivedFrame(&rx_frame);
 
 			if(xCanRxQueue != NULL)
 			{
 				(void)xQueueSendToBack(xCanRxQueue, &rx_frame, 0);
-				printf("[CAN] RX queued for MQTT: id=0x%03lX\r\n",
-					(unsigned long)rx_frame.id);
+				if(rx_frame.id != CAN_ID_NODE_HEARTBEAT)
+				{
+					printf("[CAN] RX queued for MQTT: id=0x%03lX\r\n",
+						(unsigned long)rx_frame.id);
+				}
 			}
 
 			if(rx_frame.id == CAN_ID_BODY_CMD)
@@ -178,7 +191,7 @@ void CanTask(void *parameter)
 			}
 		}
 
-		vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(1000));
+		vTaskDelay(pdMS_TO_TICKS(CAN_TASK_PERIOD_MS));
 	}
 }
 

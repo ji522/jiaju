@@ -38,6 +38,7 @@ const static char password[] = "";
 
 const static char LedTopic[] = "/smarthome/led/cmd";
 const static char KeyTopic[] = "/smarthome/key/info";
+const static char VehicleKeyTopic[] = "/vehicle/bcm/input";
 const static char BcmCmdTopic[] = "/vehicle/bcm/command";
 const static char BcmStatusTopic[] = "/vehicle/bcm/status";
 const static char LegacyVehicleCmdTopic[] = "/vehicle/body/cmd";
@@ -383,25 +384,34 @@ static void prvMQTTEchoTask(void *pvParameters)
 				message.retained = 0;
 				message.payload = payload;
 				snprintf(payload, sizeof(payload),
-					"{\"src\":\"key\",\"num\":%u,\"press_ms\":%u}",
+					"{\"src\":\"input\",\"device\":\"key\",\"key_id\":%u,\"press_ms\":%u}",
 					(unsigned)key.num, (unsigned)key.time);
 				message.payloadlen = strlen(payload);
-				printf("%s\r\n", payload);
+				printf("[MQTT] Key event payload: %s\r\n", payload);
 
-				rc = MQTTPublish(&client, KeyTopic, &message);
+				rc = MQTTPublish(&client, VehicleKeyTopic, &message);
 				if(rc != 0)
 				{
 					printf("[MQTT] Publish failed (rc=%d)\r\n", rc);
 				}
+				else
+				{
+					printf("[MQTT] Key event published -> %s\r\n", VehicleKeyTopic);
+				}
+
+				(void)MQTTPublish(&client, KeyTopic, &message);
 			}
 
 			while(xCanRxQueue != NULL &&
 				xQueueReceive(xCanRxQueue, &can_frame, 0) == pdPASS)
 			{
-				printf("[MQTT] CAN RX dequeued for uplink: id=0x%03lX dlc=%u data0=0x%02X\r\n",
-					(unsigned long)can_frame.id,
-					(unsigned)can_frame.dlc,
-					(unsigned)can_frame.data[0]);
+				if(can_frame.id != CAN_ID_NODE_HEARTBEAT)
+				{
+					printf("[MQTT] CAN RX dequeued for uplink: id=0x%03lX dlc=%u data0=0x%02X\r\n",
+						(unsigned long)can_frame.id,
+						(unsigned)can_frame.dlc,
+						(unsigned)can_frame.data[0]);
+				}
 				if(can_frame.id == CAN_ID_BODY_STATUS)
 				{
 					prvPublishCanFrame(&client, &can_frame);

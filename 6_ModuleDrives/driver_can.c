@@ -1,7 +1,7 @@
 /**
  * @file driver_can.c
- * @brief F407 CAN1 驱动 —— Loopback 模式自收发测试
- * @note PB8=CAN1_RX, PB9=CAN1_TX, 当前位时序为 250kbps
+ * @brief F407 CAN1 driver for BCM gateway prototype
+ * @note PB8=CAN1_RX, PB9=CAN1_TX, current bit timing = 250kbps
  */
 #include "driver_can.h"
 #include "FreeRTOS.h"
@@ -44,7 +44,11 @@ int Driver_CAN_Init(void)
 	hcan1.Instance = CAN1;
 	HAL_CAN_DeInit(&hcan1);
 
+#if CAN_LINK_MODE == CAN_LINK_MODE_LOOPBACK
 	hcan1.Init.Mode = CAN_MODE_LOOPBACK;
+#else
+	hcan1.Init.Mode = CAN_MODE_NORMAL;
+#endif
 	hcan1.Init.SyncJumpWidth = CAN_SJW_1TQ;
 	hcan1.Init.TimeSeg1 = CAN_BS1_6TQ;
 	hcan1.Init.TimeSeg2 = CAN_BS2_1TQ;
@@ -85,7 +89,11 @@ int Driver_CAN_Init(void)
 		return -1;
 	}
 
+#if CAN_LINK_MODE == CAN_LINK_MODE_LOOPBACK
 	printf("[CAN] Init OK (loopback 250kbps)\r\n");
+#else
+	printf("[CAN] Init OK (normal 250kbps)\r\n");
+#endif
 	return 0;
 }
 

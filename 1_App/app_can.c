@@ -68,8 +68,17 @@ static void prvHandleReceivedFrame(const CanFrame *frame)
 
 	if(frame->id == CAN_ID_BODY_CMD && frame->dlc > 0U)
 	{
+#if CAN_LINK_MODE == CAN_LINK_MODE_LOOPBACK
 		g_can_body_status = frame->data[0];
 		g_can_node_mode = CAN_NODE_NORMAL;
+		g_can_status_dirty = 1U;
+		prvApplyBodyStatus(g_can_body_status);
+#endif
+	}
+	else if(frame->id == CAN_ID_BODY_STATUS && frame->dlc >= 2U)
+	{
+		g_can_body_status = frame->data[0];
+		g_can_node_mode = frame->data[1];
 		g_can_status_dirty = 1U;
 		prvApplyBodyStatus(g_can_body_status);
 	}
@@ -175,6 +184,7 @@ void CanTask(void *parameter)
 
 			if(rx_frame.id == CAN_ID_BODY_CMD)
 			{
+#if CAN_LINK_MODE == CAN_LINK_MODE_LOOPBACK
 				CanFrame status_frame = {0};
 				status_frame.id = CAN_ID_BODY_STATUS;
 				status_frame.dlc = 2;
@@ -188,6 +198,7 @@ void CanTask(void *parameter)
 						(unsigned)status_frame.data[0],
 						(unsigned)status_frame.data[1]);
 				}
+#endif
 			}
 		}
 

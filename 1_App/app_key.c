@@ -24,6 +24,7 @@ void KeyTask(void *parameter)
 	ptIODev keyDev = IODev_GetDev(KEY);
 
 	(void)parameter;
+	printf("[KEY] Task started\r\n");
 
 	/* 创建按键事件队列，供网络任务等上层业务读取按键数据。 */
 	xKeyQueue = xQueueCreate(QUEUE_LENGTH, QUEUE_ITEM_SIZE);
@@ -48,18 +49,26 @@ void KeyTask(void *parameter)
 
 	/* 初始化按键硬件，通常会完成 GPIO、外部中断或定时扫描相关配置。 */
 	keyDev->Init(keyDev);
+	printf("[KEY] Device init OK\r\n");
 
 	while(1)
 	{
 		/* 等待消抖逻辑通知有新的按键事件到来。 */
 		ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+		printf("[KEY] Notify received\r\n");
 
 		/* 将驱动缓冲区中已经生成的按键事件全部取出，再统一发送到消息队列。 */
 		while(keyDev->Read(keyDev, (uint8_t*)&key, sizeof(KeyEvent)) == 0)
 		{
+			printf("[KEY] Event: num=%u press_ms=%u\r\n",
+				(unsigned)key.num, (unsigned)key.time);
 			if(xQueueSendToBack(xKeyQueue, (uint8_t*)&key, pdMS_TO_TICKS(10)) != pdPASS)
 			{
 				printf("Key Queue Send full.\r\n");
+			}
+			else
+			{
+				printf("[KEY] Event queued for MQTT\r\n");
 			}
 		}
 	}

@@ -1,4 +1,4 @@
-/*******************************************************************************
+﻿/*******************************************************************************
  * Copyright (c) 2014, 2015 IBM Corp.
  *
  * All rights reserved. This program and the accompanying materials
@@ -119,12 +119,12 @@ const static WiFiInfo wifi = {WiFi_ID, "iPhone16proMax", "333666999"};
 
 void NetworkInit(Network* n)
 {
-	n->netdev = NetDev_GetDev(ESP8266);
+		n->netdev = NetDev_GetDev(ESP8266);
 	if(n->netdev != NULL)
 	{
 		if(n->netdev->Init(n->netdev) == 0)
 		{
-			if(n->netdev->Connect(n->netdev, (char*)&wifi.id, 5000) == 0)
+			if(n->netdev->Connect(n->netdev, (char*)&wifi.id, 15000) == 0)
 			{
 				printf("Connect WiFi success.\r\n");
 				n->mqttread = FreeRTOS_read;
@@ -214,3 +214,5 @@ int NetworkConnectTLS(Network *n, char* addr, int port, SlSockSecureFiles_t* cer
 	return retVal;
 }
 #endif
+
+

@@ -1,6 +1,6 @@
-/**
+﻿/**
  * @file driver_net.c
- * @brief ESP8266 AT 驱动与 TCP 负载解析器
+ * @brief ESP8266 AT 椹卞姩涓?TCP 璐熻浇瑙ｆ瀽鍣?
  */
 
 #include "driver_net.h"
@@ -11,28 +11,30 @@
 #include "stdio.h"
 
 static void HAL_UART2_MspInit(UART_HandleTypeDef *huart);
-/* 逐字节解析 ESP8266 回包中的 +IPD 数据帧。 */
+/* 閫愬瓧鑺傝В鏋?ESP8266 鍥炲寘涓殑 +IPD 鏁版嵁甯с€?*/
 void NetDataProcess_Callback(uint8_t data);
 
 /*
  * USART2 must stay within the FreeRTOS "syscall-safe" priority range because
  * the RX ISR wakes the MQTT task with vTaskNotifyGiveFromISR().
- * USART2 中断优先级必须位于 FreeRTOS 可调用系统 API 的安全范围内。
+ * USART2 涓柇浼樺厛绾у繀椤讳綅浜?FreeRTOS 鍙皟鐢ㄧ郴缁?API 鐨勫畨鍏ㄨ寖鍥村唴銆?
  */
 #define NET_UART_IRQ_PRIORITY 12U
 
 static UART_HandleTypeDef huart2;
 
-/* 保存 AT 指令应答流（如 OK / ERROR / SEND OK）。 */
+/* 淇濆瓨 AT 鎸囦护搴旂瓟娴侊紙濡?OK / ERROR / SEND OK锛夈€?*/
 static RingBuffer CMDRetBuffer;
-/* 保存从 +IPD 帧中提取出的纯 TCP 负载。 */
+/* 淇濆瓨浠?+IPD 甯т腑鎻愬彇鍑虹殑绾?TCP 璐熻浇銆?*/
 static RingBuffer NetDataBuffer;
-/* 当前等待网络接收事件的任务句柄。 */
+/* 褰撳墠绛夊緟缃戠粶鎺ユ敹浜嬩欢鐨勪换鍔″彞鏌勩€?*/
 static TaskHandle_t xNetWaitTaskHandle = NULL;
+/* Initialize the modem only once; later reconnects should reuse the live link. */
+static uint8_t g_net_driver_inited = 0U;
 
 static void Driver_Net_RegisterCurrentTask(void)
 {
-	/* 记录当前任务，便于 ISR 收到数据后定向唤醒。 */
+	/* 璁板綍褰撳墠浠诲姟锛屼究浜?ISR 鏀跺埌鏁版嵁鍚庡畾鍚戝敜閱掋€?*/
 	if(xTaskGetSchedulerState() == taskSCHEDULER_RUNNING)
 	{
 		xNetWaitTaskHandle = xTaskGetCurrentTaskHandle();
@@ -41,7 +43,7 @@ static void Driver_Net_RegisterCurrentTask(void)
 
 static void Driver_Net_ClearWaitNotification(void)
 {
-	/* 清理旧通知，避免把历史事件误当成本次收包事件。 */
+	/* 娓呯悊鏃ч€氱煡锛岄伩鍏嶆妸鍘嗗彶浜嬩欢璇綋鎴愭湰娆℃敹鍖呬簨浠躲€?*/
 	if(xTaskGetSchedulerState() == taskSCHEDULER_RUNNING &&
 		xNetWaitTaskHandle == xTaskGetCurrentTaskHandle())
 	{
@@ -58,12 +60,12 @@ static void Driver_Net_TaskDelay(uint32_t delay_ms)
 
 	if(xTaskGetSchedulerState() == taskSCHEDULER_RUNNING)
 	{
-		/* RTOS 运行时优先使用任务延时，避免忙等。 */
+		/* RTOS 杩愯鏃朵紭鍏堜娇鐢ㄤ换鍔″欢鏃讹紝閬垮厤蹇欑瓑銆?*/
 		vTaskDelay(pdMS_TO_TICKS(delay_ms));
 	}
 	else
 	{
-		/* 调度器未启动时退化为 HAL 阻塞延时。 */
+		/* 璋冨害鍣ㄦ湭鍚姩鏃堕€€鍖栦负 HAL 闃诲寤舵椂銆?*/
 		HAL_Delay(delay_ms);
 	}
 }
@@ -79,7 +81,7 @@ static void Driver_Net_WaitForRxActivity(uint32_t timeout_ms)
 		xNetWaitTaskHandle != NULL &&
 		xNetWaitTaskHandle == xTaskGetCurrentTaskHandle())
 	{
-		/* 等待 ISR 通过任务通知告知“有新数据到达”。 */
+		/* 绛夊緟 ISR 閫氳繃浠诲姟閫氱煡鍛婄煡鈥滄湁鏂版暟鎹埌杈锯€濄€?*/
 		(void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(timeout_ms));
 	}
 	else
@@ -90,7 +92,7 @@ static void Driver_Net_WaitForRxActivity(uint32_t timeout_ms)
 
 static int Driver_Net_WaitForReply(const char *reply, uint16_t timeout)
 {
-	/* 在 AT 应答缓冲区中轮询匹配目标关键字。 */
+	/* 鍦?AT 搴旂瓟缂撳啿鍖轰腑杞鍖归厤鐩爣鍏抽敭瀛椼€?*/
 	uint8_t i = 0;
 	char buf[128] = {0};
 
@@ -108,7 +110,183 @@ static int Driver_Net_WaitForReply(const char *reply, uint16_t timeout)
 			i = (i + 1) % sizeof(buf);
 			if(strstr(buf, reply) != 0)
 			{
-				/* 找到目标应答。 */
+				/* 鎵惧埌鐩爣搴旂瓟銆?*/
+				return 0;
+			}
+		}
+		else
+		{
+			timeout--;
+			Driver_Net_WaitForRxActivity(1);
+		}
+	}
+
+	return -1;
+}
+
+static int Driver_Net_WaitForAnyReply(const char *const replies[], uint8_t reply_count, uint16_t timeout)
+{
+	uint8_t i = 0;
+	uint8_t r = 0;
+	char buf[128] = {0};
+
+	if(replies == NULL || reply_count == 0 || timeout == 0)
+	{
+		return -1;
+	}
+
+	Driver_Net_ClearWaitNotification();
+
+	while(timeout != 0)
+	{
+		if(Driver_Buffer_Read(&CMDRetBuffer, (uint8_t*)&buf[i]) == 0)
+		{
+			i = (i + 1) % sizeof(buf);
+			for(r = 0; r < reply_count; r++)
+			{
+				if(replies[r] != NULL && strstr(buf, replies[r]) != 0)
+				{
+					return 0;
+				}
+			}
+		}
+		else
+		{
+			timeout--;
+			Driver_Net_WaitForRxActivity(1);
+		}
+	}
+
+	return -1;
+}
+
+static int Driver_Net_WaitForTcpConnect(uint16_t timeout)
+{
+	static const char *const xSuccessReplies[] = {
+		"OK\r\n",
+		"CONNECT",
+		"Linked",
+		"ALREADY CONNECTED"
+	};
+	static const char *const xFailReplies[] = {
+		"ERROR",
+		"busy p...",
+		"link is not valid",
+		"DNS Fail",
+		"no ip"
+	};
+	uint8_t i = 0;
+	uint8_t r = 0;
+	char buf[192] = {0};
+
+	Driver_Net_ClearWaitNotification();
+
+	while(timeout != 0)
+	{
+		if(Driver_Buffer_Read(&CMDRetBuffer, (uint8_t*)&buf[i]) == 0)
+		{
+			i = (i + 1) % sizeof(buf);
+
+			for(r = 0; r < (sizeof(xSuccessReplies) / sizeof(xSuccessReplies[0])); r++)
+			{
+				if(strstr(buf, xSuccessReplies[r]) != 0)
+				{
+					return 0;
+				}
+			}
+
+			for(r = 0; r < (sizeof(xFailReplies) / sizeof(xFailReplies[0])); r++)
+			{
+				if(strstr(buf, xFailReplies[r]) != 0)
+				{
+					printf("[NET] CIPSTART reply: %s\r\n", buf);
+					return -1;
+				}
+			}
+		}
+		else
+		{
+			timeout--;
+			Driver_Net_WaitForRxActivity(1);
+		}
+	}
+
+	printf("[NET] CIPSTART timeout.\r\n");
+	return -1;
+}
+
+static int Driver_Net_WaitForWiFiJoin(uint16_t timeout)
+{
+	static const char *const xSuccessReplies[] = {
+		"WIFI GOT IP",
+		"GOT IP"
+	};
+	static const char *const xFailReplies[] = {
+		"+CWJAP:",
+		"FAIL",
+		"ERROR"
+	};
+	uint8_t i = 0;
+	uint8_t r = 0;
+	char buf[192] = {0};
+
+	Driver_Net_ClearWaitNotification();
+
+	while(timeout != 0)
+	{
+		if(Driver_Buffer_Read(&CMDRetBuffer, (uint8_t*)&buf[i]) == 0)
+		{
+			i = (i + 1) % sizeof(buf);
+
+			for(r = 0; r < (sizeof(xSuccessReplies) / sizeof(xSuccessReplies[0])); r++)
+			{
+				if(strstr(buf, xSuccessReplies[r]) != 0)
+				{
+					return 0;
+				}
+			}
+
+			for(r = 0; r < (sizeof(xFailReplies) / sizeof(xFailReplies[0])); r++)
+			{
+				if(strstr(buf, xFailReplies[r]) != 0)
+				{
+					printf("[NET] CWJAP reply: %s\r\n", buf);
+					return -1;
+				}
+			}
+		}
+		else
+		{
+			timeout--;
+			Driver_Net_WaitForRxActivity(1);
+		}
+	}
+
+	printf("[NET] CWJAP raw timeout.\r\n");
+	return -1;
+}
+
+static int Driver_Net_HasValidStaIp(uint16_t timeout)
+{
+	char buf[192] = {0};
+	uint8_t i = 0;
+
+	Driver_Net_RegisterCurrentTask();
+	Driver_Buffer_Clean(&CMDRetBuffer);
+	HAL_UART_Transmit(&huart2, (uint8_t *)"AT+CIFSR\r\n", strlen("AT+CIFSR\r\n"), 500);
+	Driver_Net_ClearWaitNotification();
+
+	while(timeout != 0)
+	{
+		if(Driver_Buffer_Read(&CMDRetBuffer, (uint8_t *)&buf[i]) == 0)
+		{
+			i = (i + 1) % sizeof(buf);
+			if(strstr(buf, "STAIP,\"0.0.0.0\"") != 0)
+			{
+				return -1;
+			}
+			if(strstr(buf, "STAIP,\"") != 0)
+			{
 				return 0;
 			}
 		}
@@ -124,7 +302,7 @@ static int Driver_Net_WaitForReply(const char *reply, uint16_t timeout)
 
 static int Driver_Net_UART_Init(void)
 {
-	/* 初始化 USART2（连接 ESP8266）。 */
+	/* 鍒濆鍖?USART2锛堣繛鎺?ESP8266锛夈€?*/
 	huart2.Instance = USART2;
 	huart2.Init.BaudRate = 115200;
 	huart2.Init.WordLength = UART_WORDLENGTH_8B;
@@ -142,7 +320,7 @@ static int Driver_Net_UART_Init(void)
 	}
 
 	/* Capture every received byte immediately through RXNE interrupts. */
-	/* 开启 RXNE 中断，逐字节接收，降低数据丢失风险。 */
+	/* 寮€鍚?RXNE 涓柇锛岄€愬瓧鑺傛帴鏀讹紝闄嶄綆鏁版嵁涓㈠け椋庨櫓銆?*/
 	__HAL_UART_ENABLE_IT(&huart2, UART_IT_RXNE);
 
 	return 0;
@@ -150,7 +328,7 @@ static int Driver_Net_UART_Init(void)
 
 static void HAL_UART2_MspInit(UART_HandleTypeDef *huart)
 {
-	/* 配置 USART2 的 GPIO 与 NVIC。 */
+	/* 閰嶇疆 USART2 鐨?GPIO 涓?NVIC銆?*/
 	GPIO_InitTypeDef GPIO_InitStruct = {0};
 
 	if(huart->Instance == USART2)
@@ -167,7 +345,7 @@ static void HAL_UART2_MspInit(UART_HandleTypeDef *huart)
 
 		/* USART2_RX -> PA3, F407 AF7 */
 		GPIO_InitStruct.Pin = GPIO_PIN_3;
-		GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
+		GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
 		GPIO_InitStruct.Pull = GPIO_PULLUP;
 		GPIO_InitStruct.Alternate = GPIO_AF7_USART2;
 		HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
@@ -179,7 +357,7 @@ static void HAL_UART2_MspInit(UART_HandleTypeDef *huart)
 
 void USART2_IRQHandler(void)
 {
-	/* 串口接收中断：保存 AT 流 + 解析 +IPD + 通知等待任务。 */
+	/* 涓插彛鎺ユ敹涓柇锛氫繚瀛?AT 娴?+ 瑙ｆ瀽 +IPD + 閫氱煡绛夊緟浠诲姟銆?*/
 	uint8_t rx_data = 0;
 	BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
@@ -205,7 +383,7 @@ void USART2_IRQHandler(void)
 
 static int Driver_Net_TransmitCmd(const char *cmd, const char *reply, uint16_t timeout)
 {
-	/* 发送 AT 指令，并等待指定应答字符串。 */
+	/* 鍙戦€?AT 鎸囦护锛屽苟绛夊緟鎸囧畾搴旂瓟瀛楃涓层€?*/
 	char buf[128] = {0};
 	int ret = -1;
 
@@ -227,7 +405,7 @@ static int Driver_Net_TransmitCmd(const char *cmd, const char *reply, uint16_t t
 
 int Driver_Net_TransmitSocket(const char *socket, int len, int timeout)
 {
-	/* 两阶段发送：先 CIPSEND 获取 '>'，再发实际数据等待 SEND OK。 */
+	/* 涓ら樁娈靛彂閫侊細鍏?CIPSEND 鑾峰彇 '>'锛屽啀鍙戝疄闄呮暟鎹瓑寰?SEND OK銆?*/
 	char cmd[16] = {0};
 	int ret = -1;
 
@@ -253,7 +431,7 @@ int Driver_Net_TransmitSocket(const char *socket, int len, int timeout)
 
 int Driver_Net_RecvSocket(char *buf, int len, int timeout)
 {
-	/* 从纯数据缓冲区按目标长度读取，超时返回未完成状态。 */
+	/* 浠庣函鏁版嵁缂撳啿鍖烘寜鐩爣闀垮害璇诲彇锛岃秴鏃惰繑鍥炴湭瀹屾垚鐘舵€併€?*/
 	int recvLen = 0;
 
 	if(buf == NULL || len <= 0)
@@ -288,15 +466,39 @@ int Driver_Net_RecvSocket(char *buf, int len, int timeout)
 
 int Driver_Net_ConnectWiFi(const char *ssid, const char *pwd, int timeout)
 {
-	/* 组包并发送连接 WiFi 指令。 */
-	char buf[50] = "AT+CWJAP=\"";
+	/* 缁勫寘骞跺彂閫佽繛鎺?WiFi 鎸囦护銆?*/
+	char buf[64] = "AT+CWJAP=\"";
 
 	strcat(buf, ssid);
 	strcat(buf, "\",\"");
 	strcat(buf, pwd);
 	strcat(buf, "\"");
 
-	return Driver_Net_TransmitCmd(buf, "GOT IP\r\n", timeout);
+	Driver_Net_RegisterCurrentTask();
+
+	if(strstr(buf, "\r\n") == NULL)
+	{
+		strcat(buf, "\r\n");
+	}
+
+	printf("[NET] Joining WiFi: %s\r\n", ssid);
+	Driver_Buffer_Clean(&CMDRetBuffer);
+	HAL_UART_Transmit(&huart2, (uint8_t *)buf, strlen(buf), 500);
+
+	if(Driver_Net_WaitForWiFiJoin(timeout) == 0)
+	{
+		return 0;
+	}
+
+	/* Some firmware builds report WiFi status through CIFSR after a long join.
+	 * Treat it as success only if a non-zero STA IP is assigned. */
+	if(Driver_Net_HasValidStaIp(3000) == 0)
+	{
+		return 0;
+	}
+
+	printf("[NET] CWJAP timeout or failed.\r\n");
+	return -1;
 }
 
 int Driver_Net_DisconnectWiFi(void)
@@ -306,7 +508,7 @@ int Driver_Net_DisconnectWiFi(void)
 
 int Driver_Net_ConnectTCP(const char *ip, int port, int timeout)
 {
-	/* 先配置单连接与普通传输模式，再发起 TCP 连接。 */
+	/* 鍏堥厤缃崟杩炴帴涓庢櫘閫氫紶杈撴ā寮忥紝鍐嶅彂璧?TCP 杩炴帴銆?*/
 	char buf[128] = "AT+CIPSTART=\"TCP\",\"";
 
 	if(Driver_Net_TransmitCmd("AT+CIPMUX=0", "OK\r\n", 500) != 0)
@@ -322,7 +524,16 @@ int Driver_Net_ConnectTCP(const char *ip, int port, int timeout)
 	Driver_Net_TaskDelay(1);
 
 	sprintf(&buf[19], "%s\",%d", ip, port);
-	return Driver_Net_TransmitCmd(buf, "OK\r\n", timeout);
+	Driver_Net_RegisterCurrentTask();
+
+	if(strstr(buf, "\r\n") == NULL)
+	{
+		strcat(buf, "\r\n");
+	}
+
+	Driver_Buffer_Clean(&CMDRetBuffer);
+	HAL_UART_Transmit(&huart2, (uint8_t *)buf, strlen(buf), 500);
+	return Driver_Net_WaitForTcpConnect(timeout);
 }
 
 int Driver_Net_Disconnect_TCP_UDP(void)
@@ -331,7 +542,7 @@ int Driver_Net_Disconnect_TCP_UDP(void)
 }
 
 typedef enum AT_STATUS{
-	/* 解析 +IPD 的状态机：帧头 -> 长度 -> 数据体。 */
+	/* 瑙ｆ瀽 +IPD 鐨勭姸鎬佹満锛氬抚澶?-> 闀垮害 -> 鏁版嵁浣撱€?*/
 	INIT_STATUS,
 	LEN_STATUS,
 	DATA_STATUS
@@ -341,7 +552,7 @@ static uint8_t g_DataBuff[256] = {0};
 
 void NetDataProcess_Callback(uint8_t data)
 {
-	/* 从串口字节流中提取 +IPD,<len>:<data> 里的 data 部分。 */
+	/* 浠庝覆鍙ｅ瓧鑺傛祦涓彁鍙?+IPD,<len>:<data> 閲岀殑 data 閮ㄥ垎銆?*/
 	uint8_t *buf = g_DataBuff;
 	static AT_STATUS g_status = INIT_STATUS;
 	static int g_DataBuffIndex = 0;
@@ -414,8 +625,12 @@ void NetDataProcess_Callback(uint8_t data)
 
 int Driver_Net_Init(void)
 {
-	/* 初始化串口、缓冲区并完成 ESP8266 基础配置。 */
 	Driver_Net_RegisterCurrentTask();
+
+	if(g_net_driver_inited != 0U)
+	{
+		return 0;
+	}
 
 	if(Driver_Net_UART_Init() != 0)
 	{
@@ -435,12 +650,15 @@ int Driver_Net_Init(void)
 	{
 		return -1;
 	}
-	Driver_Net_TaskDelay(500);
+	Driver_Net_TaskDelay(2000);
 
 	if(Driver_Net_TransmitCmd("AT+CWMODE=1", "OK\r\n", 500) != 0)
 	{
 		return -1;
 	}
 
+	g_net_driver_inited = 1U;
 	return 0;
 }
+
+

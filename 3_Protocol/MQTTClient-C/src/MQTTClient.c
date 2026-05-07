@@ -80,39 +80,14 @@ void MQTTClientInit(MQTTClient* c, Network* network, unsigned int command_timeou
 }
 
 
-static int decodePacket(MQTTClient* c, int* value, int timeout)
-{
-    unsigned char i;
-    int multiplier = 1;
-    int len = 0;
-    const int MAX_NO_OF_REMAINING_LENGTH_BYTES = 4;
-
-    *value = 0;
-    do
-    {
-        int rc = MQTTPACKET_READ_ERROR;
-
-        if (++len > MAX_NO_OF_REMAINING_LENGTH_BYTES)
-        {
-            rc = MQTTPACKET_READ_ERROR; /* bad data */
-            goto exit;
-        }
-        rc = c->ipstack->mqttread(c->ipstack, &i, 1, timeout);
-        if (rc != 1)
-            goto exit;
-        *value += (i & 127) * multiplier;
-        multiplier *= 128;
-    } while ((i & 128) != 0);
-exit:
-    return len;
-}
-
-
 static int readPacket(MQTTClient* c, Timer* timer)
 {
     MQTTHeader header = {0};
     int len = 0;
     int rem_len = 0;
+    int multiplier = 1;
+    const int MAX_NO_OF_REMAINING_LENGTH_BYTES = 4;
+    unsigned char rem_len_byte = 0;
 
     /* 1. read the header byte.  This has the packet type in it */
     int rc = c->ipstack->mqttread(c->ipstack, c->readbuf, 1, TimerLeftMS(timer));
@@ -120,9 +95,30 @@ static int readPacket(MQTTClient* c, Timer* timer)
         goto exit;
 
     len = 1;
-    /* 2. read the remaining length.  This is variable in itself */
-    decodePacket(c, &rem_len, TimerLeftMS(timer));
-    len += MQTTPacket_encode(c->readbuf + 1, rem_len); /* put the original remaining length back into the buffer */
+
+    /* 2. read the remaining length byte-by-byte and preserve the raw stream.
+     * ESP8266 may split TCP payloads across multiple +IPD frames, so a short
+     * read here should be treated like "packet not complete yet", not a hard
+     * protocol failure. */
+    do
+    {
+        if((len - 1) >= MAX_NO_OF_REMAINING_LENGTH_BYTES)
+        {
+            rc = MQTTPACKET_READ_ERROR;
+            goto exit;
+        }
+
+        rc = c->ipstack->mqttread(c->ipstack, &rem_len_byte, 1, TimerLeftMS(timer));
+        if(rc != 1)
+        {
+            rc = 0;
+            goto exit;
+        }
+
+        c->readbuf[len++] = rem_len_byte;
+        rem_len += (rem_len_byte & 127) * multiplier;
+        multiplier *= 128;
+    } while ((rem_len_byte & 128) != 0);
 
     if (rem_len > (c->readbuf_size - len))
     {

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @file driver_net.c
  * @brief ESP8266 AT 椹卞姩涓?TCP 璐熻浇瑙ｆ瀽鍣?
  */
@@ -352,19 +352,80 @@ static void HAL_UART2_MspInit(UART_HandleTypeDef *huart)
 
 		HAL_NVIC_SetPriority(USART2_IRQn, NET_UART_IRQ_PRIORITY, 0);
 		HAL_NVIC_EnableIRQ(USART2_IRQn);
+
+static int Driver_Net_UART_Init(void)
+{
+	/* 鍒濆鍖?USART2锛堣繛鎺?ESP8266锛夈€?*/
+	huart2.Instance = USART2;
+	huart2.Init.BaudRate = 115200;
+	huart2.Init.WordLength = UART_WORDLENGTH_8B;
+	huart2.Init.StopBits = UART_STOPBITS_1;
+	huart2.Init.Parity = UART_PARITY_NONE;
+	huart2.Init.Mode = UART_MODE_TX_RX;
+	huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+	huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+
+	HAL_UART2_MspInit(&huart2);
+
+	if(HAL_UART_Init(&huart2) != HAL_OK)
+	{
+		return -1;
+	}
+
+	/* Capture every received byte immediately through RXNE interrupts. */
+	/* 寮€鍚?RXNE 涓柇锛岄€愬瓧鑺傛帴鏀讹紝闄嶄綆鏁版嵁涓㈠け椋庨櫓銆?*/
+	__HAL_UART_ENABLE_IT(&huart2, UART_IT_RXNE);
+
+	return 0;
+}
+
+static void HAL_UART2_MspInit(UART_HandleTypeDef *huart)
+{
+	/* 閰嶇疆 USART2 鐨?GPIO 涓?NVIC銆?*/
+	GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+	if(huart->Instance == USART2)
+	{
+		__HAL_RCC_USART2_CLK_ENABLE();
+		__HAL_RCC_GPIOA_CLK_ENABLE();
+
+		/* USART2_TX -> PA2, F407 AF7 */
+		GPIO_InitStruct.Pin = GPIO_PIN_2;
+		GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+		GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+		GPIO_InitStruct.Alternate = GPIO_AF7_USART2;
+		HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+		/* USART2_RX -> PA3, F407 AF7 */
+		GPIO_InitStruct.Pin = GPIO_PIN_3;
+		GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+		GPIO_InitStruct.Pull = GPIO_PULLUP;
+		GPIO_InitStruct.Alternate = GPIO_AF7_USART2;
+		HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+		HAL_NVIC_SetPriority(USART2_IRQn, NET_UART_IRQ_PRIORITY, 0);
+		HAL_NVIC_EnableIRQ(USART2_IRQn);
 	}
 }
 
 void USART2_IRQHandler(void)
 {
-	/* 涓插彛鎺ユ敹涓柇锛氫繚瀛?AT 娴?+ 瑙ｆ瀽 +IPD + 閫氱煡绛夊緟浠诲姟銆?*/
+	/* 串口接收中断：保存 AT 流 + 解析 +IPD + 通知等待任务。 */
 	uint8_t rx_data = 0;
 	BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
 	if(__HAL_UART_GET_FLAG(&huart2, UART_FLAG_RXNE) == SET)
 	{
 		__HAL_UART_CLEAR_FLAG(&huart2, UART_FLAG_RXNE);
-		rx_data = USART2->DR;
+
+		/* fix: F407 USART 在发生 ORE（溢出错误）后，单独读 DR 不能清除 ORE 标志，
+		 * 会导致中断反复触发卡死。需先检查并清除 ORE。 */
+		if(__HAL_UART_GET_FLAG(&huart2, UART_FLAG_ORE) == SET)
+		{
+			__HAL_UART_CLEAR_OREFLAG(&huart2);
+		}
+
+		rx_data = (uint8_t)(USART2->DR & 0xFFU);
 
 		/* Keep the raw modem reply stream for AT command matching. */
 		Driver_Buffer_Write(&CMDRetBuffer, rx_data);
@@ -466,20 +527,13 @@ int Driver_Net_RecvSocket(char *buf, int len, int timeout)
 
 int Driver_Net_ConnectWiFi(const char *ssid, const char *pwd, int timeout)
 {
-	/* 缁勫寘骞跺彂閫佽繛鎺?WiFi 鎸囦护銆?*/
-	char buf[64] = "AT+CWJAP=\"";
-
-	strcat(buf, ssid);
-	strcat(buf, "\",\"");
-	strcat(buf, pwd);
-	strcat(buf, "\"");
+	/* fix: buf 从 64 扩大到 128，SSID(最镳32B)+密码(最镳64B)+固定字符 > 64，
+	 * 原来指针源头 buf[64] 会栈溢出，改用 snprintf 拼字符串。 */
+	char buf[128];
 
 	Driver_Net_RegisterCurrentTask();
 
-	if(strstr(buf, "\r\n") == NULL)
-	{
-		strcat(buf, "\r\n");
-	}
+	snprintf(buf, sizeof(buf), "AT+CWJAP=\"%s\",\"%s\"\r\n", ssid, pwd);
 
 	printf("[NET] Joining WiFi: %s\r\n", ssid);
 	Driver_Buffer_Clean(&CMDRetBuffer);
@@ -607,6 +661,14 @@ void NetDataProcess_Callback(uint8_t data)
 
 		case DATA_STATUS:
 		{
+			/* fix: 加越界守卫，防止 g_DataLen 异常大或已占满 g_DataBuff 时数组越界。 */
+			if(g_DataBuffIndex >= (int)sizeof(g_DataBuff))
+			{
+				g_status = INIT_STATUS;
+				g_DataBuffIndex = 0;
+				g_DataLen = 0;
+				break;
+			}
 			/* Once the declared number of bytes is received, push payload only. */
 			if(g_DataBuffIndex == g_DataLen)
 			{

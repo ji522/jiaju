@@ -411,13 +411,6 @@ static void prvMQTTEchoTask(void *pvParameters)
 						(unsigned long)can_frame.id,
 						(unsigned)can_frame.dlc,
 						(unsigned)can_frame.data[0]);
-				}
-				if(can_frame.id == CAN_ID_BODY_STATUS)
-				{
-					prvPublishCanFrame(&client, &can_frame);
-				}
-				else if(can_frame.id != CAN_ID_NODE_HEARTBEAT)
-				{
 					prvPublishCanFrame(&client, &can_frame);
 				}
 			}

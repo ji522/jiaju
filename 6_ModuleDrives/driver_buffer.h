@@ -13,10 +13,10 @@
  * @brief 环形缓冲区控制结构体
  */
 typedef struct{
-	uint8_t *fifo;      /* 缓冲区的动态分配内存块基地址 */
-	uint16_t pw;        /* 写指针 (Pointer Write)，记录下一次可以写入数据的位置 */
-	uint16_t pr;        /* 读指针 (Pointer Read)，记录下一次可以读取数据的位置 */
-	uint16_t buf_size;  /* 该缓冲区的申请的最大容量 */
+	uint8_t *fifo;           /* 缓冲区的动态分配内存块基地址 */
+	volatile uint16_t pw;   /* 写指针 (Pointer Write)，ISR 侧写入，volatile 防编译器优化 */
+	volatile uint16_t pr;   /* 读指针 (Pointer Read)，任务侧读取，volatile 防编译器优化 */
+	uint16_t buf_size;       /* 该缓冲区的申请的最大容量 */
 } RingBuffer, *ptRingBuffer;
 
 /**

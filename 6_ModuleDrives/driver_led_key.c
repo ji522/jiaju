@@ -57,7 +57,9 @@ int Driver_Key_Init(void)
 
 	HAL_GPIO_Init(KEY_PORT, &GPIO_InitStruct);
 
-	HAL_NVIC_SetPriority(EXTI0_IRQn, 0, 0);
+	/* fix: 优先级从 0 改为 5，确保不超出 FreeRTOS configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY。
+	 * 在回调里调用了 vTaskNotifyGiveFromISR()，优先级 0 会触发 FreeRTOS 断言。 */
+	HAL_NVIC_SetPriority(EXTI0_IRQn, 5, 0);
 	HAL_NVIC_EnableIRQ(EXTI0_IRQn);
 
 	return 0;
@@ -105,7 +107,8 @@ void KeyShakeProcess_Callback(void)
 	static uint32_t release_time = 0;
 	uint32_t tick = HAL_GetTick();
 
-	if(tick == KeyTrigerTime)
+	/* fix: 改为 >= 并加 !=0 守卫，避免精确相等只有1ms 时间窗口导致按键丢失。 */
+	if(KeyTrigerTime != 0 && tick >= KeyTrigerTime)
 	{
 		if(KEY_STATUE() == 0)
 		{

@@ -18,6 +18,7 @@
 #include "cJSON.h"
 #include "driver_can.h"
 
+extern void CAN_ClearDiagnostics(void);
 extern TaskHandle_t ledTaskHandle;
 extern QueueHandle_t xKeyQueue;
 extern TaskHandle_t xMqttTaskHandle;
@@ -29,9 +30,21 @@ extern volatile uint32_t g_can_rx_count;
 extern volatile uint32_t g_can_last_rx_id;
 extern volatile uint8_t g_can_last_cmd_seq;
 extern volatile uint8_t g_can_last_status_seq;
+extern volatile uint8_t g_can_pending_cmd_seq;
+extern volatile uint8_t g_can_pending_cmd_active;
+extern volatile uint8_t g_can_seq_consistent;
+extern volatile uint32_t g_can_seq_match_count;
+extern volatile uint32_t g_can_seq_mismatch_count;
+extern volatile uint8_t g_can_last_seq_expected;
+extern volatile uint8_t g_can_last_seq_observed;
 extern volatile uint8_t g_can_node_mode;
 extern volatile uint8_t g_can_body_status;
 extern volatile uint8_t g_can_status_dirty;
+extern volatile uint8_t g_can_slave_online;
+extern volatile uint32_t g_can_slave_timeout_count;
+extern volatile uint32_t g_can_last_slave_rx_age_ms;
+extern volatile uint32_t g_can_dtc_mask;
+extern volatile uint8_t g_can_last_dtc;
 extern volatile uint32_t g_mqtt_reconn_count;
 
 /* ========== MQTT 服务器参数 ========== */
@@ -116,7 +129,7 @@ static void prvPublishCanFrame(MQTTClient *client, const CanFrame *frame)
 
 static void prvPublishGatewayStatus(MQTTClient *client)
 {
-	char payload[256];
+	char payload[512];
 	int written = 0;
 
 	if(client == NULL)
@@ -129,6 +142,11 @@ static void prvPublishGatewayStatus(MQTTClient *client)
 		"\"output_mask\":%u,\"lamp\":%s,\"hazard\":%s,\"fan\":%s,"
 		"\"can_tx_cnt\":%lu,\"can_rx_cnt\":%lu,\"last_rx_id\":%lu,"
 		"\"can_tx_fail_cnt\":%lu,\"last_cmd_seq\":%u,\"last_status_seq\":%u,"
+		"\"seq_ok\":%s,\"pending_seq\":%u,\"pending_active\":%s,"
+		"\"seq_match_cnt\":%lu,\"seq_mismatch_cnt\":%lu,"
+		"\"seq_expected\":%u,\"seq_observed\":%u,"
+		"\"dtc_mask\":%lu,\"last_dtc\":%u,"
+		"\"slave_online\":%s,\"slave_timeout_cnt\":%lu,\"last_slave_age_ms\":%lu,"
 		"\"mqtt_state\":%d,\"mqtt_reconn_cnt\":%lu}",
 		(unsigned)g_can_node_mode,
 		(unsigned)g_can_body_status,
@@ -141,6 +159,18 @@ static void prvPublishGatewayStatus(MQTTClient *client)
 		(unsigned long)g_can_tx_fail_count,
 		(unsigned)g_can_last_cmd_seq,
 		(unsigned)g_can_last_status_seq,
+		g_can_seq_consistent ? "true" : "false",
+		(unsigned)g_can_pending_cmd_seq,
+		g_can_pending_cmd_active ? "true" : "false",
+		(unsigned long)g_can_seq_match_count,
+		(unsigned long)g_can_seq_mismatch_count,
+		(unsigned)g_can_last_seq_expected,
+		(unsigned)g_can_last_seq_observed,
+		(unsigned long)g_can_dtc_mask,
+		(unsigned)g_can_last_dtc,
+		g_can_slave_online ? "true" : "false",
+		(unsigned long)g_can_slave_timeout_count,
+		(unsigned long)g_can_last_slave_rx_age_ms,
 		(int)g_mqtt_state,
 		(unsigned long)g_mqtt_reconn_count);
 	if(written < 0 || written >= (int)sizeof(payload))
@@ -287,6 +317,11 @@ void messageArrived(MessageData* data)
 					(unsigned long)xTaskGetTickCount(),
 					(unsigned long)g_mqtt_reconn_count,
 					(int)g_mqtt_state);
+			}
+			else if(strcmp(cmd->valuestring, "clear_dtc") == 0)
+			{
+				CAN_ClearDiagnostics();
+				printf("[MQTT] clear_dtc executed\r\n");
 			}
 		}
 		cJSON_Delete(root);

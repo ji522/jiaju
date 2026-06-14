@@ -18,6 +18,10 @@
 #define CAN_BODY_STATUS_BYTE_MODE   1U
 #define CAN_BODY_STATUS_BYTE_SEQ    2U
 
+#define CAN_HEARTBEAT_BYTE_MODE     0U
+#define CAN_HEARTBEAT_BYTE_MASK     1U
+#define CAN_HEARTBEAT_BYTE_SEQ      2U
+
 typedef enum
 {
 	CAN_NODE_INIT = 0,

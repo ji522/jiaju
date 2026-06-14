@@ -30,8 +30,20 @@ extern volatile uint32_t g_can_rx_count;
 extern volatile uint32_t g_can_last_rx_id;
 extern volatile uint8_t g_can_last_cmd_seq;
 extern volatile uint8_t g_can_last_status_seq;
+extern volatile uint8_t g_can_pending_cmd_seq;
+extern volatile uint8_t g_can_pending_cmd_active;
+extern volatile uint8_t g_can_seq_consistent;
+extern volatile uint32_t g_can_seq_match_count;
+extern volatile uint32_t g_can_seq_mismatch_count;
+extern volatile uint8_t g_can_last_seq_expected;
+extern volatile uint8_t g_can_last_seq_observed;
 extern volatile uint8_t g_can_node_mode;
 extern volatile uint8_t g_can_body_status;
+extern volatile uint8_t g_can_slave_online;
+extern volatile uint32_t g_can_slave_timeout_count;
+extern volatile uint32_t g_can_last_slave_rx_age_ms;
+extern volatile uint32_t g_can_dtc_mask;
+extern volatile uint8_t g_can_last_dtc;
 extern TaskHandle_t ledTaskHandle;
 extern TaskHandle_t keyTaskHandle;
 TaskHandle_t xMqttTaskHandle = NULL;
@@ -59,6 +71,22 @@ static void vDiagnosticTask(void *pvParameters)
 		printf("CAN seq:      cmd=%u status=%u\n",
 			(unsigned)g_can_last_cmd_seq,
 			(unsigned)g_can_last_status_seq);
+		printf("CAN seq chk:  ok=%u pending=%u active=%u match=%lu mismatch=%lu\n",
+			(unsigned)g_can_seq_consistent,
+			(unsigned)g_can_pending_cmd_seq,
+			(unsigned)g_can_pending_cmd_active,
+			(unsigned long)g_can_seq_match_count,
+			(unsigned long)g_can_seq_mismatch_count);
+		printf("CAN seq exp:  expected=%u observed=%u\n",
+			(unsigned)g_can_last_seq_expected,
+			(unsigned)g_can_last_seq_observed);
+		printf("CAN dtc:      mask=0x%08lX last=0x%02X\n",
+			(unsigned long)g_can_dtc_mask,
+			(unsigned)g_can_last_dtc);
+		printf("CAN slave:    online=%u timeout=%lu age=%lu ms\n",
+			(unsigned)g_can_slave_online,
+			(unsigned long)g_can_slave_timeout_count,
+			(unsigned long)g_can_last_slave_rx_age_ms);
 		printf("CAN last id:  0x%03lX\n", (unsigned long)g_can_last_rx_id);
 		printf("Free heap:    %lu\n", (unsigned long)xPortGetFreeHeapSize());
 

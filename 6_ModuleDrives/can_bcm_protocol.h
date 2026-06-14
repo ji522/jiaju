@@ -33,6 +33,10 @@
 #define CAN_BODY_STATUS_BYTE_MODE   1U
 #define CAN_BODY_STATUS_BYTE_SEQ    2U
 
+#define CAN_HEARTBEAT_BYTE_MODE     0U
+#define CAN_HEARTBEAT_BYTE_MASK     1U
+#define CAN_HEARTBEAT_BYTE_SEQ      2U
+
 typedef struct
 {
 	uint32_t id;
@@ -47,5 +51,19 @@ typedef enum
 	CAN_NODE_DEGRADED = 2,
 	CAN_NODE_FAULT = 3
 } CanNodeMode;
+
+typedef enum
+{
+	CAN_DTC_NONE = 0x00U,
+	CAN_DTC_TX_FAIL = 0x01U,
+	CAN_DTC_NODE_TIMEOUT = 0x02U,
+	CAN_DTC_SEQ_TIMEOUT = 0x03U,
+	CAN_DTC_SEQ_MISMATCH = 0x04U
+} CanDtcCode;
+
+#define CAN_DTC_MASK_TX_FAIL       (1UL << 0)
+#define CAN_DTC_MASK_NODE_TIMEOUT  (1UL << 1)
+#define CAN_DTC_MASK_SEQ_TIMEOUT   (1UL << 2)
+#define CAN_DTC_MASK_SEQ_MISMATCH  (1UL << 3)
 
 #endif

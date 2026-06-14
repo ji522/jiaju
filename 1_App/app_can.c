@@ -15,6 +15,7 @@
 #define CAN_RX_QUEUE_LENGTH 8
 #define CAN_TASK_PERIOD_MS 20U
 #define CAN_HEARTBEAT_PERIOD_MS 5000U
+#define CAN_SLAVE_TIMEOUT_MS 1500U
 #define CAN_RX_POLL_TIMEOUT_MS 1U
 
 QueueHandle_t xCanTxQueue = NULL;
@@ -29,9 +30,57 @@ volatile uint32_t g_can_rx_count = 0;
 volatile uint32_t g_can_last_rx_id = 0;
 volatile uint8_t g_can_last_cmd_seq = 0;
 volatile uint8_t g_can_last_status_seq = 0;
+volatile uint8_t g_can_pending_cmd_seq = 0;
+volatile uint8_t g_can_pending_cmd_active = 0;
+volatile uint8_t g_can_seq_consistent = 1;
+volatile uint32_t g_can_seq_match_count = 0;
+volatile uint32_t g_can_seq_mismatch_count = 0;
+volatile uint8_t g_can_last_seq_expected = 0;
+volatile uint8_t g_can_last_seq_observed = 0;
 volatile uint8_t g_can_node_mode = CAN_NODE_INIT;
 volatile uint8_t g_can_body_status = 0;
 volatile uint8_t g_can_status_dirty = 0;
+volatile uint8_t g_can_slave_online = 0;
+volatile uint32_t g_can_slave_timeout_count = 0;
+volatile uint32_t g_can_last_slave_rx_age_ms = 0;
+volatile uint32_t g_can_dtc_mask = 0;
+volatile uint8_t g_can_last_dtc = CAN_DTC_NONE;
+
+static TickType_t s_last_slave_rx_tick = 0;
+static uint8_t s_slave_timeout_latched = 0U;
+static uint8_t s_seq_mismatch_latched = 0U;
+
+void CAN_ClearDiagnostics(void)
+{
+	g_can_tx_fail_count = 0U;
+	g_can_last_tx_fail_id = 0U;
+	g_can_last_error = 0U;
+	g_can_last_esr = 0U;
+	g_can_seq_consistent = 1U;
+	g_can_seq_match_count = 0U;
+	g_can_seq_mismatch_count = 0U;
+	g_can_last_seq_expected = 0U;
+	g_can_last_seq_observed = 0U;
+	g_can_pending_cmd_seq = 0U;
+	g_can_pending_cmd_active = 0U;
+	g_can_dtc_mask = 0U;
+	g_can_last_dtc = CAN_DTC_NONE;
+	g_can_slave_timeout_count = 0U;
+	s_slave_timeout_latched = 0U;
+	s_seq_mismatch_latched = 0U;
+	g_can_status_dirty = 1U;
+	printf("[CAN] Diagnostics cleared\r\n");
+}
+
+static void prvRaiseDtc(uint32_t dtc_mask, uint8_t dtc_code)
+{
+	if((g_can_dtc_mask & dtc_mask) == 0U)
+	{
+		g_can_dtc_mask |= dtc_mask;
+		g_can_status_dirty = 1U;
+	}
+	g_can_last_dtc = dtc_code;
+}
 
 static void prvApplyBodyStatus(uint8_t body_status)
 {
@@ -53,12 +102,89 @@ static void prvRecordCanTxFailure(uint32_t frame_id)
 	g_can_last_error = Driver_CAN_GetError();
 	g_can_last_esr = Driver_CAN_GetESR();
 	g_can_node_mode = CAN_NODE_DEGRADED;
+	prvRaiseDtc(CAN_DTC_MASK_TX_FAIL, CAN_DTC_TX_FAIL);
 
 	printf("[CAN] TX failed: id=0x%03lX err=0x%08lX esr=0x%08lX fails=%lu\r\n",
 		(unsigned long)g_can_last_tx_fail_id,
 		(unsigned long)g_can_last_error,
 		(unsigned long)g_can_last_esr,
 		(unsigned long)g_can_tx_fail_count);
+}
+
+static void prvNoteSlaveActivity(uint32_t frame_id)
+{
+	s_last_slave_rx_tick = xTaskGetTickCount();
+	g_can_last_slave_rx_age_ms = 0U;
+	s_slave_timeout_latched = 0U;
+
+	if(g_can_slave_online == 0U)
+	{
+		g_can_slave_online = 1U;
+		g_can_status_dirty = 1U;
+		printf("[CAN] Slave online: id=0x%03lX\r\n", (unsigned long)(frame_id & 0x7FFU));
+	}
+}
+
+static void prvCheckSlaveTimeout(void)
+{
+	TickType_t now = xTaskGetTickCount();
+	TickType_t elapsed_ticks = now - s_last_slave_rx_tick;
+
+	g_can_last_slave_rx_age_ms = (uint32_t)elapsed_ticks * (uint32_t)portTICK_PERIOD_MS;
+
+	if(s_slave_timeout_latched == 0U &&
+		elapsed_ticks >= pdMS_TO_TICKS(CAN_SLAVE_TIMEOUT_MS))
+	{
+		s_slave_timeout_latched = 1U;
+		g_can_slave_online = 0U;
+		g_can_slave_timeout_count++;
+		g_can_node_mode = CAN_NODE_DEGRADED;
+		g_can_seq_consistent = 0U;
+		prvRaiseDtc(CAN_DTC_MASK_NODE_TIMEOUT, CAN_DTC_NODE_TIMEOUT);
+		if(g_can_pending_cmd_active != 0U)
+		{
+			g_can_seq_mismatch_count++;
+			prvRaiseDtc(CAN_DTC_MASK_SEQ_TIMEOUT, CAN_DTC_SEQ_TIMEOUT);
+			printf("[CAN] Seq timeout: expected=%u\r\n",
+				(unsigned)g_can_pending_cmd_seq);
+		}
+		g_can_pending_cmd_active = 0U;
+		s_seq_mismatch_latched = 0U;
+		g_can_status_dirty = 1U;
+		printf("[CAN] Slave timeout: no BODY_STATUS/HEARTBEAT for %lu ms\r\n",
+			(unsigned long)g_can_last_slave_rx_age_ms);
+	}
+}
+
+static void prvTrackSeqObservation(uint8_t observed_seq)
+{
+	g_can_last_seq_observed = observed_seq;
+
+	if(g_can_pending_cmd_active == 0U)
+	{
+		return;
+	}
+
+	if(observed_seq == g_can_pending_cmd_seq)
+	{
+		g_can_seq_match_count++;
+		g_can_seq_consistent = 1U;
+		g_can_pending_cmd_active = 0U;
+		s_seq_mismatch_latched = 0U;
+		g_can_status_dirty = 1U;
+	}
+	else if(s_seq_mismatch_latched == 0U)
+	{
+		g_can_seq_mismatch_count++;
+		g_can_seq_consistent = 0U;
+		g_can_last_seq_expected = g_can_pending_cmd_seq;
+		s_seq_mismatch_latched = 1U;
+		prvRaiseDtc(CAN_DTC_MASK_SEQ_MISMATCH, CAN_DTC_SEQ_MISMATCH);
+		g_can_status_dirty = 1U;
+		printf("[CAN] Seq mismatch: expected=%u got=%u\r\n",
+			(unsigned)g_can_pending_cmd_seq,
+			(unsigned)observed_seq);
+	}
 }
 
 static void prvBuildHeartbeatFrame(CanFrame *frame)
@@ -102,16 +228,55 @@ static void prvHandleReceivedFrame(const CanFrame *frame)
 	}
 	else if(frame->id == CAN_ID_BODY_STATUS && frame->dlc >= 2U)
 	{
+		uint8_t prev_mode = g_can_node_mode;
+		uint8_t prev_body = g_can_body_status;
+		uint8_t prev_seq = g_can_last_status_seq;
+
+		prvNoteSlaveActivity(frame->id);
 		g_can_body_status = frame->data[CAN_BODY_STATUS_BYTE_MASK];
 		g_can_node_mode = frame->data[CAN_BODY_STATUS_BYTE_MODE];
 		g_can_last_status_seq = (frame->dlc > CAN_BODY_STATUS_BYTE_SEQ) ?
 			frame->data[CAN_BODY_STATUS_BYTE_SEQ] : 0U;
-		g_can_status_dirty = 1U;
+		prvTrackSeqObservation(g_can_last_status_seq);
+		if(prev_mode != g_can_node_mode ||
+			prev_body != g_can_body_status ||
+			prev_seq != g_can_last_status_seq)
+		{
+			g_can_status_dirty = 1U;
+		}
 		prvApplyBodyStatus(g_can_body_status);
 	}
 	else if(frame->id == CAN_ID_NODE_HEARTBEAT)
 	{
-		g_can_node_mode = CAN_NODE_NORMAL;
+		uint8_t prev_mode = g_can_node_mode;
+		uint8_t prev_body = g_can_body_status;
+		uint8_t prev_seq = g_can_last_status_seq;
+
+		prvNoteSlaveActivity(frame->id);
+		if(frame->dlc > CAN_HEARTBEAT_BYTE_MODE)
+		{
+			g_can_node_mode = frame->data[CAN_HEARTBEAT_BYTE_MODE];
+		}
+		if(frame->dlc > CAN_HEARTBEAT_BYTE_MASK)
+		{
+			g_can_body_status = frame->data[CAN_HEARTBEAT_BYTE_MASK];
+		}
+		if(frame->dlc > CAN_HEARTBEAT_BYTE_SEQ)
+		{
+			g_can_last_status_seq = frame->data[CAN_HEARTBEAT_BYTE_SEQ];
+			g_can_last_seq_observed = g_can_last_status_seq;
+			if(g_can_pending_cmd_active != 0U &&
+				g_can_last_status_seq == g_can_pending_cmd_seq)
+			{
+				prvTrackSeqObservation(g_can_last_status_seq);
+			}
+		}
+		if(prev_mode != g_can_node_mode ||
+			prev_body != g_can_body_status ||
+			prev_seq != g_can_last_status_seq)
+		{
+			g_can_status_dirty = 1U;
+		}
 	}
 }
 
@@ -139,6 +304,13 @@ void CanTask(void *parameter)
 	LED(0);
 
 	g_can_node_mode = CAN_NODE_NORMAL;
+	s_last_slave_rx_tick = xTaskGetTickCount();
+	s_slave_timeout_latched = 0U;
+	g_can_slave_online = 0U;
+	g_can_slave_timeout_count = 0U;
+	g_can_last_slave_rx_age_ms = 0U;
+	g_can_dtc_mask = 0U;
+	g_can_last_dtc = CAN_DTC_NONE;
 	printf("[CAN] Gateway node init OK\r\n");
 
 	while(1)
@@ -160,6 +332,15 @@ void CanTask(void *parameter)
 			if(Driver_CAN_Send(tx_frame.id, tx_frame.data, tx_frame.dlc) == 0)
 			{
 				g_can_tx_count++;
+				if(tx_frame.id == CAN_ID_BODY_CMD && tx_frame.dlc > CAN_BODY_CMD_BYTE_SEQ)
+				{
+					g_can_pending_cmd_seq = tx_frame.data[CAN_BODY_CMD_BYTE_SEQ];
+					g_can_pending_cmd_active = 1U;
+					g_can_last_seq_expected = g_can_pending_cmd_seq;
+					g_can_seq_consistent = 1U;
+					s_seq_mismatch_latched = 0U;
+					g_can_status_dirty = 1U;
+				}
 				printf("[CAN] TX sent: id=0x%03lX count=%lu\r\n",
 					(unsigned long)tx_frame.id,
 					(unsigned long)g_can_tx_count);
@@ -239,6 +420,8 @@ void CanTask(void *parameter)
 #endif
 			}
 		}
+
+		prvCheckSlaveTimeout();
 
 		vTaskDelay(pdMS_TO_TICKS(CAN_TASK_PERIOD_MS));
 	}

@@ -24,8 +24,11 @@ extern TaskHandle_t xMqttTaskHandle;
 extern QueueHandle_t xCanTxQueue;
 extern QueueHandle_t xCanRxQueue;
 extern volatile uint32_t g_can_tx_count;
+extern volatile uint32_t g_can_tx_fail_count;
 extern volatile uint32_t g_can_rx_count;
 extern volatile uint32_t g_can_last_rx_id;
+extern volatile uint8_t g_can_last_cmd_seq;
+extern volatile uint8_t g_can_last_status_seq;
 extern volatile uint8_t g_can_node_mode;
 extern volatile uint8_t g_can_body_status;
 extern volatile uint8_t g_can_status_dirty;
@@ -42,6 +45,8 @@ const static char VehicleKeyTopic[] = "/vehicle/bcm/input";
 const static char BcmCmdTopic[] = "/vehicle/bcm/command";
 const static char BcmStatusTopic[] = "/vehicle/bcm/status";
 const static char LegacyVehicleCmdTopic[] = "/vehicle/body/cmd";
+
+static uint8_t s_next_cmd_seq = 1U;
 
 /* Reconnect state machine shared with diagnostics/status reporting. */
 typedef enum {
@@ -74,7 +79,7 @@ static void prvPublishText(MQTTClient *client, const char *topic, char *payload)
 
 static void prvPublishCanFrame(MQTTClient *client, const CanFrame *frame)
 {
-	char payload[160];
+	char payload[192];
 
 	if(client == NULL || frame == NULL)
 	{
@@ -85,12 +90,14 @@ static void prvPublishCanFrame(MQTTClient *client, const CanFrame *frame)
 	{
 		snprintf(payload, sizeof(payload),
 			"{\"src\":\"bcm\",\"frame\":\"body_status\",\"can_id\":%lu,"
-			"\"lamp\":%s,\"hazard\":%s,\"fan\":%s,\"node_mode\":%u}",
+			"\"lamp\":%s,\"hazard\":%s,\"fan\":%s,\"node_mode\":%u,"
+			"\"seq\":%u}",
 			(unsigned long)frame->id,
-			(frame->data[0] & CAN_BODY_CTRL_LAMP) ? "true" : "false",
-			(frame->data[0] & CAN_BODY_CTRL_HAZARD) ? "true" : "false",
-			(frame->data[0] & CAN_BODY_CTRL_FAN) ? "true" : "false",
-			(unsigned)frame->data[1]);
+			(frame->data[CAN_BODY_STATUS_BYTE_MASK] & CAN_BODY_CTRL_LAMP) ? "true" : "false",
+			(frame->data[CAN_BODY_STATUS_BYTE_MASK] & CAN_BODY_CTRL_HAZARD) ? "true" : "false",
+			(frame->data[CAN_BODY_STATUS_BYTE_MASK] & CAN_BODY_CTRL_FAN) ? "true" : "false",
+			(unsigned)frame->data[CAN_BODY_STATUS_BYTE_MODE],
+			(frame->dlc > CAN_BODY_STATUS_BYTE_SEQ) ? (unsigned)frame->data[CAN_BODY_STATUS_BYTE_SEQ] : 0U);
 	}
 	else
 	{
@@ -109,17 +116,19 @@ static void prvPublishCanFrame(MQTTClient *client, const CanFrame *frame)
 
 static void prvPublishGatewayStatus(MQTTClient *client)
 {
-	char payload[192];
+	char payload[256];
+	int written = 0;
 
 	if(client == NULL)
 	{
 		return;
 	}
 
-	snprintf(payload, sizeof(payload),
+	written = snprintf(payload, sizeof(payload),
 		"{\"src\":\"bcm\",\"frame\":\"node_status\",\"node_mode\":%u,"
 		"\"output_mask\":%u,\"lamp\":%s,\"hazard\":%s,\"fan\":%s,"
 		"\"can_tx_cnt\":%lu,\"can_rx_cnt\":%lu,\"last_rx_id\":%lu,"
+		"\"can_tx_fail_cnt\":%lu,\"last_cmd_seq\":%u,\"last_status_seq\":%u,"
 		"\"mqtt_state\":%d,\"mqtt_reconn_cnt\":%lu}",
 		(unsigned)g_can_node_mode,
 		(unsigned)g_can_body_status,
@@ -129,8 +138,16 @@ static void prvPublishGatewayStatus(MQTTClient *client)
 		(unsigned long)g_can_tx_count,
 		(unsigned long)g_can_rx_count,
 		(unsigned long)g_can_last_rx_id,
+		(unsigned long)g_can_tx_fail_count,
+		(unsigned)g_can_last_cmd_seq,
+		(unsigned)g_can_last_status_seq,
 		(int)g_mqtt_state,
 		(unsigned long)g_mqtt_reconn_count);
+	if(written < 0 || written >= (int)sizeof(payload))
+	{
+		printf("[MQTT] node_status payload truncated\r\n");
+		return;
+	}
 	prvPublishText(client, BcmStatusTopic, payload);
 }
 
@@ -214,23 +231,37 @@ void messageArrived(MessageData* data)
 				cJSON *lamp = cJSON_GetObjectItem(root, "lamp");
 				cJSON *hazard = cJSON_GetObjectItem(root, "hazard");
 				cJSON *fan = cJSON_GetObjectItem(root, "fan");
+				cJSON *seq = cJSON_GetObjectItem(root, "seq");
 
 				frame.id = CAN_ID_BODY_CMD;
-				frame.dlc = 1;
-				frame.data[0] = 0;
+				frame.dlc = 2;
+				frame.data[CAN_BODY_CMD_BYTE_MASK] = 0;
+				if(cJSON_IsNumber(seq) && seq->valueint >= 0 && seq->valueint <= 255)
+				{
+					frame.data[CAN_BODY_CMD_BYTE_SEQ] = (uint8_t)seq->valueint;
+				}
+				else
+				{
+					frame.data[CAN_BODY_CMD_BYTE_SEQ] = s_next_cmd_seq++;
+					if(s_next_cmd_seq == 0U)
+					{
+						s_next_cmd_seq = 1U;
+					}
+				}
 
 				if(cJSON_IsBool(lamp) && cJSON_IsTrue(lamp))
-					frame.data[0] |= CAN_BODY_CTRL_LAMP;
+					frame.data[CAN_BODY_CMD_BYTE_MASK] |= CAN_BODY_CTRL_LAMP;
 				if(cJSON_IsBool(hazard) && cJSON_IsTrue(hazard))
-					frame.data[0] |= CAN_BODY_CTRL_HAZARD;
+					frame.data[CAN_BODY_CMD_BYTE_MASK] |= CAN_BODY_CTRL_HAZARD;
 				if(cJSON_IsBool(fan) && cJSON_IsTrue(fan))
-					frame.data[0] |= CAN_BODY_CTRL_FAN;
+					frame.data[CAN_BODY_CMD_BYTE_MASK] |= CAN_BODY_CTRL_FAN;
 
-				printf("[MQTT] body_ctrl parsed: lamp=%d hazard=%d fan=%d data0=0x%02X\r\n",
+				printf("[MQTT] body_ctrl parsed: lamp=%d hazard=%d fan=%d data0=0x%02X seq=%u\r\n",
 					cJSON_IsBool(lamp) ? cJSON_IsTrue(lamp) : -1,
 					cJSON_IsBool(hazard) ? cJSON_IsTrue(hazard) : -1,
 					cJSON_IsBool(fan) ? cJSON_IsTrue(fan) : -1,
-					(unsigned)frame.data[0]);
+					(unsigned)frame.data[CAN_BODY_CMD_BYTE_MASK],
+					(unsigned)frame.data[CAN_BODY_CMD_BYTE_SEQ]);
 
 				if(xCanTxQueue != NULL)
 				{
@@ -242,7 +273,7 @@ void messageArrived(MessageData* data)
 					{
 						printf("[MQTT] CAN TX queued: id=0x%03lX data0=0x%02X\r\n",
 							(unsigned long)frame.id,
-							(unsigned)frame.data[0]);
+							(unsigned)frame.data[CAN_BODY_CMD_BYTE_MASK]);
 					}
 				}
 				else

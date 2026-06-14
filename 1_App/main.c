@@ -28,6 +28,8 @@ extern volatile uint32_t g_can_last_error;
 extern volatile uint32_t g_can_last_esr;
 extern volatile uint32_t g_can_rx_count;
 extern volatile uint32_t g_can_last_rx_id;
+extern volatile uint8_t g_can_last_cmd_seq;
+extern volatile uint8_t g_can_last_status_seq;
 extern volatile uint8_t g_can_node_mode;
 extern volatile uint8_t g_can_body_status;
 extern TaskHandle_t ledTaskHandle;
@@ -54,6 +56,9 @@ static void vDiagnosticTask(void *pvParameters)
 		printf("CAN fail id:  0x%03lX\n", (unsigned long)g_can_last_tx_fail_id);
 		printf("CAN error:    0x%08lX\n", (unsigned long)g_can_last_error);
 		printf("CAN ESR:      0x%08lX\n", (unsigned long)g_can_last_esr);
+		printf("CAN seq:      cmd=%u status=%u\n",
+			(unsigned)g_can_last_cmd_seq,
+			(unsigned)g_can_last_status_seq);
 		printf("CAN last id:  0x%03lX\n", (unsigned long)g_can_last_rx_id);
 		printf("Free heap:    %lu\n", (unsigned long)xPortGetFreeHeapSize());
 

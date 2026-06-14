@@ -27,6 +27,8 @@ volatile uint32_t g_can_last_error = 0;
 volatile uint32_t g_can_last_esr = 0;
 volatile uint32_t g_can_rx_count = 0;
 volatile uint32_t g_can_last_rx_id = 0;
+volatile uint8_t g_can_last_cmd_seq = 0;
+volatile uint8_t g_can_last_status_seq = 0;
 volatile uint8_t g_can_node_mode = CAN_NODE_INIT;
 volatile uint8_t g_can_body_status = 0;
 volatile uint8_t g_can_status_dirty = 0;
@@ -67,12 +69,13 @@ static void prvBuildHeartbeatFrame(CanFrame *frame)
 	}
 
 	frame->id = CAN_ID_NODE_HEARTBEAT;
-	frame->dlc = 4;
+	frame->dlc = 5;
 	frame->data[0] = g_can_node_mode;
 	frame->data[1] = g_can_body_status;
 	frame->data[2] = (uint8_t)(g_can_tx_count & 0xFFU);
 	frame->data[3] = (uint8_t)(g_can_rx_count & 0xFFU);
-	memset(&frame->data[4], 0, 4);
+	frame->data[4] = g_can_last_status_seq;
+	memset(&frame->data[5], 0, 3);
 }
 
 static void prvHandleReceivedFrame(const CanFrame *frame)
@@ -88,7 +91,10 @@ static void prvHandleReceivedFrame(const CanFrame *frame)
 	if(frame->id == CAN_ID_BODY_CMD && frame->dlc > 0U)
 	{
 #if CAN_LINK_MODE == CAN_LINK_MODE_LOOPBACK
-		g_can_body_status = frame->data[0];
+		g_can_body_status = frame->data[CAN_BODY_CMD_BYTE_MASK];
+		g_can_last_cmd_seq = (frame->dlc > CAN_BODY_CMD_BYTE_SEQ) ?
+			frame->data[CAN_BODY_CMD_BYTE_SEQ] : 0U;
+		g_can_last_status_seq = g_can_last_cmd_seq;
 		g_can_node_mode = CAN_NODE_NORMAL;
 		g_can_status_dirty = 1U;
 		prvApplyBodyStatus(g_can_body_status);
@@ -96,8 +102,10 @@ static void prvHandleReceivedFrame(const CanFrame *frame)
 	}
 	else if(frame->id == CAN_ID_BODY_STATUS && frame->dlc >= 2U)
 	{
-		g_can_body_status = frame->data[0];
-		g_can_node_mode = frame->data[1];
+		g_can_body_status = frame->data[CAN_BODY_STATUS_BYTE_MASK];
+		g_can_node_mode = frame->data[CAN_BODY_STATUS_BYTE_MODE];
+		g_can_last_status_seq = (frame->dlc > CAN_BODY_STATUS_BYTE_SEQ) ?
+			frame->data[CAN_BODY_STATUS_BYTE_SEQ] : 0U;
 		g_can_status_dirty = 1U;
 		prvApplyBodyStatus(g_can_body_status);
 	}
@@ -139,10 +147,16 @@ void CanTask(void *parameter)
 		while(xCanTxQueue != NULL &&
 			xQueueReceive(xCanTxQueue, &tx_frame, 0) == pdPASS)
 		{
-			printf("[CAN] TX queue pop: id=0x%03lX dlc=%u data0=0x%02X\r\n",
+			if(tx_frame.id == CAN_ID_BODY_CMD && tx_frame.dlc > CAN_BODY_CMD_BYTE_SEQ)
+			{
+				g_can_last_cmd_seq = tx_frame.data[CAN_BODY_CMD_BYTE_SEQ];
+			}
+			printf("[CAN] TX queue pop: id=0x%03lX dlc=%u data0=0x%02X seq=%u\r\n",
 				(unsigned long)tx_frame.id,
 				(unsigned)tx_frame.dlc,
-				(unsigned)tx_frame.data[0]);
+				(unsigned)tx_frame.data[CAN_BODY_CMD_BYTE_MASK],
+				(tx_frame.dlc > CAN_BODY_CMD_BYTE_SEQ) ?
+					(unsigned)tx_frame.data[CAN_BODY_CMD_BYTE_SEQ] : 0U);
 			if(Driver_CAN_Send(tx_frame.id, tx_frame.data, tx_frame.dlc) == 0)
 			{
 				g_can_tx_count++;
@@ -181,10 +195,12 @@ void CanTask(void *parameter)
 
 			if(rx_frame.id != CAN_ID_NODE_HEARTBEAT)
 			{
-				printf("[CAN] RX frame: id=0x%03lX dlc=%u data0=0x%02X\r\n",
+				printf("[CAN] RX frame: id=0x%03lX dlc=%u data0=0x%02X seq=%u\r\n",
 					(unsigned long)rx_frame.id,
 					(unsigned)rx_frame.dlc,
-					(unsigned)rx_frame.data[0]);
+					(unsigned)rx_frame.data[CAN_BODY_STATUS_BYTE_MASK],
+					(rx_frame.dlc > CAN_BODY_STATUS_BYTE_SEQ) ?
+						(unsigned)rx_frame.data[CAN_BODY_STATUS_BYTE_SEQ] : 0U);
 			}
 
 			prvHandleReceivedFrame(&rx_frame);
@@ -204,9 +220,10 @@ void CanTask(void *parameter)
 #if CAN_LINK_MODE == CAN_LINK_MODE_LOOPBACK
 				CanFrame status_frame = {0};
 				status_frame.id = CAN_ID_BODY_STATUS;
-				status_frame.dlc = 2;
-				status_frame.data[0] = g_can_body_status;
-				status_frame.data[1] = g_can_node_mode;
+				status_frame.dlc = 3;
+				status_frame.data[CAN_BODY_STATUS_BYTE_MASK] = g_can_body_status;
+				status_frame.data[CAN_BODY_STATUS_BYTE_MODE] = g_can_node_mode;
+				status_frame.data[CAN_BODY_STATUS_BYTE_SEQ] = g_can_last_status_seq;
 
 				if(Driver_CAN_Send(status_frame.id, status_frame.data, status_frame.dlc) == 0)
 				{

@@ -11,6 +11,13 @@
 #define CAN_BODY_CTRL_HAZARD    (1U << 1)
 #define CAN_BODY_CTRL_FAN       (1U << 2)
 
+#define CAN_BODY_CMD_BYTE_MASK      0U
+#define CAN_BODY_CMD_BYTE_SEQ       1U
+
+#define CAN_BODY_STATUS_BYTE_MASK   0U
+#define CAN_BODY_STATUS_BYTE_MODE   1U
+#define CAN_BODY_STATUS_BYTE_SEQ    2U
+
 typedef enum
 {
 	CAN_NODE_INIT = 0,

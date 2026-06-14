@@ -24,6 +24,15 @@
 #define CAN_BODY_CTRL_HAZARD    (1U << 1)
 #define CAN_BODY_CTRL_FAN       (1U << 2)
 
+/* BODY_CMD: Byte0=control bitmask, Byte1=command sequence.
+ * BODY_STATUS: Byte0=status bitmask, Byte1=node mode, Byte2=echoed sequence. */
+#define CAN_BODY_CMD_BYTE_MASK      0U
+#define CAN_BODY_CMD_BYTE_SEQ       1U
+
+#define CAN_BODY_STATUS_BYTE_MASK   0U
+#define CAN_BODY_STATUS_BYTE_MODE   1U
+#define CAN_BODY_STATUS_BYTE_SEQ    2U
+
 typedef struct
 {
 	uint32_t id;

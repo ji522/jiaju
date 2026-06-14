@@ -5,6 +5,7 @@
 #include "BcmProtocol.h"
 
 uint8_t BodyOutputMask = 0;
+uint8_t LastCmdSeq = 0;
 
 static void BCM_ApplyOutputs(uint8_t bodyMask)
 {
@@ -33,11 +34,12 @@ static void BCM_ApplyOutputs(uint8_t bodyMask)
 
 static void BCM_SendBodyStatus(void)
 {
-	uint8_t TxData[2];
+	uint8_t TxData[3];
 
-	TxData[0] = BodyOutputMask;
-	TxData[1] = CAN_NODE_NORMAL;
-	MyCAN_Transmit(CAN_ID_BODY_STATUS, 2, TxData);
+	TxData[CAN_BODY_STATUS_BYTE_MASK] = BodyOutputMask;
+	TxData[CAN_BODY_STATUS_BYTE_MODE] = CAN_NODE_NORMAL;
+	TxData[CAN_BODY_STATUS_BYTE_SEQ] = LastCmdSeq;
+	MyCAN_Transmit(CAN_ID_BODY_STATUS, 3, TxData);
 }
 
 int main(void)
@@ -59,7 +61,9 @@ int main(void)
 
 			if (RxID == CAN_ID_BODY_CMD && RxLength >= 1U)
 			{
-				BCM_ApplyOutputs(RxData[0]);
+				LastCmdSeq = (RxLength > CAN_BODY_CMD_BYTE_SEQ) ?
+					RxData[CAN_BODY_CMD_BYTE_SEQ] : 0U;
+				BCM_ApplyOutputs(RxData[CAN_BODY_CMD_BYTE_MASK]);
 				BCM_SendBodyStatus();
 			}
 		}

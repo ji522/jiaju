@@ -16,4 +16,8 @@ int Driver_CAN_Init(void);
 int Driver_CAN_Send(uint32_t id, uint8_t *data, uint8_t len);
 int Driver_CAN_Recv(uint32_t *id, uint8_t *data, uint8_t *len, uint32_t timeout_ms);
 
+/* Optional helper for future diagnostics / Bus-Off handling. */
+uint32_t Driver_CAN_GetError(void);
+uint32_t Driver_CAN_GetESR(void);
+
 #endif

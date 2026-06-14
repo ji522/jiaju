@@ -352,7 +352,10 @@ static void HAL_UART2_MspInit(UART_HandleTypeDef *huart)
 
 		HAL_NVIC_SetPriority(USART2_IRQn, NET_UART_IRQ_PRIORITY, 0);
 		HAL_NVIC_EnableIRQ(USART2_IRQn);
+	}
+}
 
+#if 0
 static int Driver_Net_UART_Init(void)
 {
 	/* 鍒濆鍖?USART2锛堣繛鎺?ESP8266锛夈€?*/
@@ -408,6 +411,7 @@ static void HAL_UART2_MspInit(UART_HandleTypeDef *huart)
 	}
 }
 
+#endif
 void USART2_IRQHandler(void)
 {
 	/* 串口接收中断：保存 AT 流 + 解析 +IPD + 通知等待任务。 */

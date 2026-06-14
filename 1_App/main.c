@@ -22,6 +22,10 @@ extern void vStartCANTasks(uint16_t usTaskStackSize, UBaseType_t uxTaskPriority)
 extern volatile uint32_t g_mqtt_reconn_count;
 extern volatile int g_mqtt_state;
 extern volatile uint32_t g_can_tx_count;
+extern volatile uint32_t g_can_tx_fail_count;
+extern volatile uint32_t g_can_last_tx_fail_id;
+extern volatile uint32_t g_can_last_error;
+extern volatile uint32_t g_can_last_esr;
 extern volatile uint32_t g_can_rx_count;
 extern volatile uint32_t g_can_last_rx_id;
 extern volatile uint8_t g_can_node_mode;
@@ -46,6 +50,10 @@ static void vDiagnosticTask(void *pvParameters)
 		printf("CAN tx/rx:    %lu / %lu\n",
 			(unsigned long)g_can_tx_count,
 			(unsigned long)g_can_rx_count);
+		printf("CAN tx fail:  %lu\n", (unsigned long)g_can_tx_fail_count);
+		printf("CAN fail id:  0x%03lX\n", (unsigned long)g_can_last_tx_fail_id);
+		printf("CAN error:    0x%08lX\n", (unsigned long)g_can_last_error);
+		printf("CAN ESR:      0x%08lX\n", (unsigned long)g_can_last_esr);
 		printf("CAN last id:  0x%03lX\n", (unsigned long)g_can_last_rx_id);
 		printf("Free heap:    %lu\n", (unsigned long)xPortGetFreeHeapSize());
 

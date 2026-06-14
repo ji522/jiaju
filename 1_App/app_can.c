@@ -21,6 +21,10 @@ QueueHandle_t xCanTxQueue = NULL;
 QueueHandle_t xCanRxQueue = NULL;
 
 volatile uint32_t g_can_tx_count = 0;
+volatile uint32_t g_can_tx_fail_count = 0;
+volatile uint32_t g_can_last_tx_fail_id = 0;
+volatile uint32_t g_can_last_error = 0;
+volatile uint32_t g_can_last_esr = 0;
 volatile uint32_t g_can_rx_count = 0;
 volatile uint32_t g_can_last_rx_id = 0;
 volatile uint8_t g_can_node_mode = CAN_NODE_INIT;
@@ -38,6 +42,21 @@ static void prvApplyBodyStatus(uint8_t body_status)
 	{
 		LED(0);
 	}
+}
+
+static void prvRecordCanTxFailure(uint32_t frame_id)
+{
+	g_can_tx_fail_count++;
+	g_can_last_tx_fail_id = frame_id & 0x7FFU;
+	g_can_last_error = Driver_CAN_GetError();
+	g_can_last_esr = Driver_CAN_GetESR();
+	g_can_node_mode = CAN_NODE_DEGRADED;
+
+	printf("[CAN] TX failed: id=0x%03lX err=0x%08lX esr=0x%08lX fails=%lu\r\n",
+		(unsigned long)g_can_last_tx_fail_id,
+		(unsigned long)g_can_last_error,
+		(unsigned long)g_can_last_esr,
+		(unsigned long)g_can_tx_fail_count);
 }
 
 static void prvBuildHeartbeatFrame(CanFrame *frame)
@@ -133,9 +152,7 @@ void CanTask(void *parameter)
 			}
 			else
 			{
-				g_can_node_mode = CAN_NODE_DEGRADED;
-				printf("[CAN] TX send failed: id=0x%03lX\r\n",
-					(unsigned long)tx_frame.id);
+				prvRecordCanTxFailure(tx_frame.id);
 			}
 		}
 
@@ -150,7 +167,7 @@ void CanTask(void *parameter)
 			}
 			else
 			{
-				g_can_node_mode = CAN_NODE_DEGRADED;
+				prvRecordCanTxFailure(tx_frame.id);
 			}
 		}
 
@@ -197,6 +214,10 @@ void CanTask(void *parameter)
 					printf("[CAN] BODY_STATUS sent: data0=0x%02X mode=%u\r\n",
 						(unsigned)status_frame.data[0],
 						(unsigned)status_frame.data[1]);
+				}
+				else
+				{
+					prvRecordCanTxFailure(status_frame.id);
 				}
 #endif
 			}

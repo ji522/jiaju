@@ -50,26 +50,46 @@ int platform_io_write(struct IODev *dev, uint8_t *buf, uint16_t len)
 
 	/* 基本参数校验：写操作必须有设备、有效缓冲区和长度 */
 	if(dev == NULL || buf == NULL || len == 0) return -1;
-	
-	/*
-	 * 本工程中 IO 写操作主要用于 LED 控制：
-	 * - 约定 buf[0] 表示 LED 状态（1:亮/开，0:灭/关）
-	 * - 直接转发到底层驱动执行
-	 */
-	return Driver_LED_WriteStatus(buf[0]);
+
+	switch(dev->Type)
+	{
+		case LED:
+		{
+			/* 当前写操作主要适配 LED 输出。 */
+			return Driver_LED_WriteStatus(buf[0]);
+		}
+
+		case KEY:
+		case DBGOUT:
+		default:
+		{
+			/* 当前平台层未定义这些 IO 设备的通用写语义。 */
+			return -1;
+		}
+	}
 }
 
 int platform_io_read(struct IODev *dev, uint8_t *buf, uint16_t len)
 {
 	/* 基本参数校验：读操作必须有设备、有效缓冲区和长度 */
 	if(dev == NULL || buf == NULL || len == 0) return -1;
-	
-	/*
-	 * 本工程中 IO 读操作主要用于按键事件读取：
-	 * - 底层驱动会从按键事件缓冲区中取出一条事件数据写入 buf
-	 * - 返回值遵循底层驱动约定（上层通常以返回 0 作为读取成功）
-	 */
-	return Driver_Key_Read(buf, len);
+
+	switch(dev->Type)
+	{
+		case KEY:
+		{
+			/* 当前读操作主要适配按键事件读取。 */
+			return Driver_Key_Read(buf, len);
+		}
+
+		case LED:
+		case DBGOUT:
+		default:
+		{
+			/* 当前平台层未定义这些 IO 设备的通用读语义。 */
+			return -1;
+		}
+	}
 }
 
 

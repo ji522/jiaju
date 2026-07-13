@@ -14,6 +14,7 @@
 #define CAN_TX_QUEUE_LENGTH 8
 #define CAN_RX_QUEUE_LENGTH 8
 #define CAN_TASK_PERIOD_MS 20U
+#define CAN_CMD_RESPONSE_TIMEOUT_MS 300U
 #define CAN_HEARTBEAT_PERIOD_MS 5000U
 #define CAN_SLAVE_TIMEOUT_MS 1500U
 #define CAN_RX_POLL_TIMEOUT_MS 1U
@@ -37,7 +38,8 @@ volatile uint32_t g_can_seq_match_count = 0;
 volatile uint32_t g_can_seq_mismatch_count = 0;
 volatile uint8_t g_can_last_seq_expected = 0;
 volatile uint8_t g_can_last_seq_observed = 0;
-volatile uint8_t g_can_node_mode = CAN_NODE_INIT;
+volatile uint8_t g_can_gateway_mode = CAN_NODE_INIT;
+volatile uint8_t g_can_slave_mode = CAN_NODE_INIT;
 volatile uint8_t g_can_body_status = 0;
 volatile uint8_t g_can_status_dirty = 0;
 volatile uint8_t g_can_slave_online = 0;
@@ -45,10 +47,29 @@ volatile uint32_t g_can_slave_timeout_count = 0;
 volatile uint32_t g_can_last_slave_rx_age_ms = 0;
 volatile uint32_t g_can_dtc_mask = 0;
 volatile uint8_t g_can_last_dtc = CAN_DTC_NONE;
+volatile uint32_t g_can_cmd_drop_count = 0;
+volatile uint32_t g_can_isr_drop_count = 0;
+volatile uint32_t g_can_uplink_drop_count = 0;
 
 static TickType_t s_last_slave_rx_tick = 0;
+static TickType_t s_pending_cmd_tick = 0;
 static uint8_t s_slave_timeout_latched = 0U;
 static uint8_t s_seq_mismatch_latched = 0U;
+
+static uint8_t prvIsValidBodyMask(uint8_t mask)
+{
+	return (mask & (uint8_t)~(CAN_BODY_CTRL_LAMP | CAN_BODY_CTRL_HAZARD | CAN_BODY_CTRL_FAN)) == 0U;
+}
+
+static uint8_t prvIsValidNodeMode(uint8_t mode)
+{
+	return mode <= CAN_NODE_FAULT;
+}
+
+static uint8_t prvIsHeartbeatFrameId(uint32_t frame_id)
+{
+	return frame_id == CAN_ID_GATEWAY_HEARTBEAT || frame_id == CAN_ID_SLAVE_HEARTBEAT;
+}
 
 void CAN_ClearDiagnostics(void)
 {
@@ -66,6 +87,9 @@ void CAN_ClearDiagnostics(void)
 	g_can_dtc_mask = 0U;
 	g_can_last_dtc = CAN_DTC_NONE;
 	g_can_slave_timeout_count = 0U;
+	g_can_cmd_drop_count = 0U;
+	g_can_isr_drop_count = 0U;
+	g_can_uplink_drop_count = 0U;
 	s_slave_timeout_latched = 0U;
 	s_seq_mismatch_latched = 0U;
 	g_can_status_dirty = 1U;
@@ -80,6 +104,48 @@ static void prvRaiseDtc(uint32_t dtc_mask, uint8_t dtc_code)
 		g_can_status_dirty = 1U;
 	}
 	g_can_last_dtc = dtc_code;
+}
+
+static void prvRecordQueueOverflow(volatile uint32_t *counter,
+	const char *tag,
+	uint32_t delta)
+{
+	uint32_t total = 0U;
+
+	if(counter == NULL || delta == 0U)
+	{
+		return;
+	}
+
+	*counter += delta;
+	total = *counter;
+	prvRaiseDtc(CAN_DTC_MASK_QUEUE_OVERFLOW, CAN_DTC_QUEUE_OVERFLOW);
+	g_can_status_dirty = 1U;
+
+	printf("[CAN] %s queue drop: +%lu total=%lu\r\n",
+		tag != NULL ? tag : "queue",
+		(unsigned long)delta,
+		(unsigned long)total);
+}
+
+void CAN_RecordCommandQueueDrop(void)
+{
+	prvRecordQueueOverflow(&g_can_cmd_drop_count, "cmd", 1U);
+}
+
+static void prvRecordUplinkQueueDrop(void)
+{
+	prvRecordQueueOverflow(&g_can_uplink_drop_count, "uplink", 1U);
+}
+
+static void prvConsumeDriverRxDrops(void)
+{
+	uint32_t dropped = Driver_CAN_TakeRxDropCount();
+
+	if(dropped != 0U)
+	{
+		prvRecordQueueOverflow(&g_can_isr_drop_count, "isr-rx", dropped);
+	}
 }
 
 static void prvApplyBodyStatus(uint8_t body_status)
@@ -101,7 +167,7 @@ static void prvRecordCanTxFailure(uint32_t frame_id)
 	g_can_last_tx_fail_id = frame_id & 0x7FFU;
 	g_can_last_error = Driver_CAN_GetError();
 	g_can_last_esr = Driver_CAN_GetESR();
-	g_can_node_mode = CAN_NODE_DEGRADED;
+	g_can_gateway_mode = CAN_NODE_DEGRADED;
 	prvRaiseDtc(CAN_DTC_MASK_TX_FAIL, CAN_DTC_TX_FAIL);
 
 	printf("[CAN] TX failed: id=0x%03lX err=0x%08lX esr=0x%08lX fails=%lu\r\n",
@@ -123,7 +189,7 @@ static void prvConsumeCanErrorSnapshot(void)
 
 	g_can_last_error = error;
 	g_can_last_esr = esr;
-	g_can_node_mode = CAN_NODE_DEGRADED;
+	g_can_gateway_mode = CAN_NODE_DEGRADED;
 	prvRaiseDtc(CAN_DTC_MASK_TX_FAIL, CAN_DTC_TX_FAIL);
 	g_can_status_dirty = 1U;
 
@@ -159,21 +225,30 @@ static void prvCheckSlaveTimeout(void)
 		s_slave_timeout_latched = 1U;
 		g_can_slave_online = 0U;
 		g_can_slave_timeout_count++;
-		g_can_node_mode = CAN_NODE_DEGRADED;
+		g_can_gateway_mode = CAN_NODE_DEGRADED;
 		g_can_seq_consistent = 0U;
 		prvRaiseDtc(CAN_DTC_MASK_NODE_TIMEOUT, CAN_DTC_NODE_TIMEOUT);
-		if(g_can_pending_cmd_active != 0U)
-		{
-			g_can_seq_mismatch_count++;
-			prvRaiseDtc(CAN_DTC_MASK_SEQ_TIMEOUT, CAN_DTC_SEQ_TIMEOUT);
-			printf("[CAN] Seq timeout: expected=%u\r\n",
-				(unsigned)g_can_pending_cmd_seq);
-		}
-		g_can_pending_cmd_active = 0U;
-		s_seq_mismatch_latched = 0U;
 		g_can_status_dirty = 1U;
 		printf("[CAN] Slave timeout: no BODY_STATUS/HEARTBEAT for %lu ms\r\n",
 			(unsigned long)g_can_last_slave_rx_age_ms);
+	}
+}
+
+static void prvCheckPendingCmdTimeout(void)
+{
+	if(g_can_pending_cmd_active != 0U &&
+		(xTaskGetTickCount() - s_pending_cmd_tick) >=
+			pdMS_TO_TICKS(CAN_CMD_RESPONSE_TIMEOUT_MS))
+	{
+		g_can_seq_consistent = 0U;
+		g_can_last_seq_expected = g_can_pending_cmd_seq;
+		g_can_pending_cmd_active = 0U;
+		s_seq_mismatch_latched = 0U;
+		prvRaiseDtc(CAN_DTC_MASK_SEQ_TIMEOUT, CAN_DTC_SEQ_TIMEOUT);
+		g_can_status_dirty = 1U;
+		printf("[CAN] Seq timeout: expected=%u wait=%u ms\r\n",
+			(unsigned)g_can_last_seq_expected,
+			(unsigned)CAN_CMD_RESPONSE_TIMEOUT_MS);
 	}
 }
 
@@ -215,9 +290,9 @@ static void prvBuildHeartbeatFrame(CanFrame *frame)
 		return;
 	}
 
-	frame->id = CAN_ID_NODE_HEARTBEAT;
+	frame->id = CAN_ID_GATEWAY_HEARTBEAT;
 	frame->dlc = 5;
-	frame->data[0] = g_can_node_mode;
+	frame->data[0] = g_can_gateway_mode;
 	frame->data[1] = g_can_body_status;
 	frame->data[2] = (uint8_t)(g_can_tx_count & 0xFFU);
 	frame->data[3] = (uint8_t)(g_can_rx_count & 0xFFU);
@@ -235,31 +310,34 @@ static void prvHandleReceivedFrame(const CanFrame *frame)
 	g_can_last_rx_id = frame->id;
 	g_can_rx_count++;
 
-	if(frame->id == CAN_ID_BODY_CMD && frame->dlc > 0U)
+	if(frame->id == CAN_ID_BODY_CMD &&
+		frame->dlc == 2U &&
+		prvIsValidBodyMask(frame->data[CAN_BODY_CMD_BYTE_MASK]) != 0U)
 	{
 #if CAN_LINK_MODE == CAN_LINK_MODE_LOOPBACK
 		g_can_body_status = frame->data[CAN_BODY_CMD_BYTE_MASK];
-		g_can_last_cmd_seq = (frame->dlc > CAN_BODY_CMD_BYTE_SEQ) ?
-			frame->data[CAN_BODY_CMD_BYTE_SEQ] : 0U;
+		g_can_last_cmd_seq = frame->data[CAN_BODY_CMD_BYTE_SEQ];
 		g_can_last_status_seq = g_can_last_cmd_seq;
-		g_can_node_mode = CAN_NODE_NORMAL;
+		g_can_slave_mode = CAN_NODE_NORMAL;
 		g_can_status_dirty = 1U;
 		prvApplyBodyStatus(g_can_body_status);
 #endif
 	}
-	else if(frame->id == CAN_ID_BODY_STATUS && frame->dlc >= 2U)
+	else if(frame->id == CAN_ID_BODY_STATUS &&
+		frame->dlc == 3U &&
+		prvIsValidBodyMask(frame->data[CAN_BODY_STATUS_BYTE_MASK]) != 0U &&
+		prvIsValidNodeMode(frame->data[CAN_BODY_STATUS_BYTE_MODE]) != 0U)
 	{
-		uint8_t prev_mode = g_can_node_mode;
+		uint8_t prev_mode = g_can_slave_mode;
 		uint8_t prev_body = g_can_body_status;
 		uint8_t prev_seq = g_can_last_status_seq;
 
 		prvNoteSlaveActivity(frame->id);
 		g_can_body_status = frame->data[CAN_BODY_STATUS_BYTE_MASK];
-		g_can_node_mode = frame->data[CAN_BODY_STATUS_BYTE_MODE];
-		g_can_last_status_seq = (frame->dlc > CAN_BODY_STATUS_BYTE_SEQ) ?
-			frame->data[CAN_BODY_STATUS_BYTE_SEQ] : 0U;
+		g_can_slave_mode = frame->data[CAN_BODY_STATUS_BYTE_MODE];
+		g_can_last_status_seq = frame->data[CAN_BODY_STATUS_BYTE_SEQ];
 		prvTrackSeqObservation(g_can_last_status_seq);
-		if(prev_mode != g_can_node_mode ||
+		if(prev_mode != g_can_slave_mode ||
 			prev_body != g_can_body_status ||
 			prev_seq != g_can_last_status_seq)
 		{
@@ -267,32 +345,21 @@ static void prvHandleReceivedFrame(const CanFrame *frame)
 		}
 		prvApplyBodyStatus(g_can_body_status);
 	}
-	else if(frame->id == CAN_ID_NODE_HEARTBEAT)
+	else if(frame->id == CAN_ID_SLAVE_HEARTBEAT &&
+		frame->dlc == 3U &&
+		prvIsValidBodyMask(frame->data[CAN_HEARTBEAT_BYTE_MASK]) != 0U &&
+		prvIsValidNodeMode(frame->data[CAN_HEARTBEAT_BYTE_MODE]) != 0U)
 	{
-		uint8_t prev_mode = g_can_node_mode;
+		uint8_t prev_mode = g_can_slave_mode;
 		uint8_t prev_body = g_can_body_status;
 		uint8_t prev_seq = g_can_last_status_seq;
 
 		prvNoteSlaveActivity(frame->id);
-		if(frame->dlc > CAN_HEARTBEAT_BYTE_MODE)
-		{
-			g_can_node_mode = frame->data[CAN_HEARTBEAT_BYTE_MODE];
-		}
-		if(frame->dlc > CAN_HEARTBEAT_BYTE_MASK)
-		{
-			g_can_body_status = frame->data[CAN_HEARTBEAT_BYTE_MASK];
-		}
-		if(frame->dlc > CAN_HEARTBEAT_BYTE_SEQ)
-		{
-			g_can_last_status_seq = frame->data[CAN_HEARTBEAT_BYTE_SEQ];
-			g_can_last_seq_observed = g_can_last_status_seq;
-			if(g_can_pending_cmd_active != 0U &&
-				g_can_last_status_seq == g_can_pending_cmd_seq)
-			{
-				prvTrackSeqObservation(g_can_last_status_seq);
-			}
-		}
-		if(prev_mode != g_can_node_mode ||
+		g_can_slave_mode = frame->data[CAN_HEARTBEAT_BYTE_MODE];
+		g_can_body_status = frame->data[CAN_HEARTBEAT_BYTE_MASK];
+		g_can_last_status_seq = frame->data[CAN_HEARTBEAT_BYTE_SEQ];
+		g_can_last_seq_observed = g_can_last_status_seq;
+		if(prev_mode != g_can_slave_mode ||
 			prev_body != g_can_body_status ||
 			prev_seq != g_can_last_status_seq)
 		{
@@ -316,7 +383,7 @@ void CanTask(void *parameter)
 
 	while(Driver_CAN_Init() != 0)
 	{
-		g_can_node_mode = CAN_NODE_FAULT;
+		g_can_gateway_mode = CAN_NODE_FAULT;
 		printf("[CAN] Init retry in 5s\r\n");
 		vTaskDelay(pdMS_TO_TICKS(5000));
 	}
@@ -324,7 +391,8 @@ void CanTask(void *parameter)
 	Driver_LED_Init();
 	LED(0);
 
-	g_can_node_mode = CAN_NODE_NORMAL;
+	g_can_gateway_mode = CAN_NODE_NORMAL;
+	g_can_slave_mode = CAN_NODE_INIT;
 	s_last_slave_rx_tick = xTaskGetTickCount();
 	s_slave_timeout_latched = 0U;
 	g_can_slave_online = 0U;
@@ -337,9 +405,11 @@ void CanTask(void *parameter)
 	while(1)
 	{
 		prvConsumeCanErrorSnapshot();
+		prvConsumeDriverRxDrops();
 
 		/* 1. Send queued body-control commands generated from MQTT. */
-		while(xCanTxQueue != NULL &&
+		if(g_can_pending_cmd_active == 0U &&
+			xCanTxQueue != NULL &&
 			xQueueReceive(xCanTxQueue, &tx_frame, 0) == pdPASS)
 		{
 			if(tx_frame.id == CAN_ID_BODY_CMD && tx_frame.dlc > CAN_BODY_CMD_BYTE_SEQ)
@@ -359,6 +429,7 @@ void CanTask(void *parameter)
 				{
 					g_can_pending_cmd_seq = tx_frame.data[CAN_BODY_CMD_BYTE_SEQ];
 					g_can_pending_cmd_active = 1U;
+					s_pending_cmd_tick = xTaskGetTickCount();
 					g_can_last_seq_expected = g_can_pending_cmd_seq;
 					g_can_seq_consistent = 1U;
 					s_seq_mismatch_latched = 0U;
@@ -397,7 +468,7 @@ void CanTask(void *parameter)
 			rx_frame.dlc = rx_len;
 			memcpy(rx_frame.data, rx_data, rx_len);
 
-			if(rx_frame.id != CAN_ID_NODE_HEARTBEAT)
+			if(prvIsHeartbeatFrameId(rx_frame.id) == 0U)
 			{
 				printf("[CAN] RX frame: id=0x%03lX dlc=%u data0=0x%02X seq=%u\r\n",
 					(unsigned long)rx_frame.id,
@@ -409,10 +480,13 @@ void CanTask(void *parameter)
 
 			prvHandleReceivedFrame(&rx_frame);
 
-			if(xCanRxQueue != NULL)
+			if(xCanRxQueue != NULL && prvIsHeartbeatFrameId(rx_frame.id) == 0U)
 			{
-				(void)xQueueSendToBack(xCanRxQueue, &rx_frame, 0);
-				if(rx_frame.id != CAN_ID_NODE_HEARTBEAT)
+				if(xQueueSendToBack(xCanRxQueue, &rx_frame, 0) != pdPASS)
+				{
+					prvRecordUplinkQueueDrop();
+				}
+				else
 				{
 					printf("[CAN] RX queued for MQTT: id=0x%03lX\r\n",
 						(unsigned long)rx_frame.id);
@@ -426,7 +500,7 @@ void CanTask(void *parameter)
 				status_frame.id = CAN_ID_BODY_STATUS;
 				status_frame.dlc = 3;
 				status_frame.data[CAN_BODY_STATUS_BYTE_MASK] = g_can_body_status;
-				status_frame.data[CAN_BODY_STATUS_BYTE_MODE] = g_can_node_mode;
+				status_frame.data[CAN_BODY_STATUS_BYTE_MODE] = g_can_slave_mode;
 				status_frame.data[CAN_BODY_STATUS_BYTE_SEQ] = g_can_last_status_seq;
 
 				if(Driver_CAN_Send(status_frame.id, status_frame.data, status_frame.dlc) == 0)
@@ -444,6 +518,7 @@ void CanTask(void *parameter)
 			}
 		}
 
+		prvCheckPendingCmdTimeout();
 		prvCheckSlaveTimeout();
 
 		vTaskDelay(pdMS_TO_TICKS(CAN_TASK_PERIOD_MS));

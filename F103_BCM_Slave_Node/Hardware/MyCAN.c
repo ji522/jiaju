@@ -1,9 +1,31 @@
 #include "stm32f10x.h"                  // Device header
+#include "MyCAN.h"
 #include "BcmProtocol.h"
+
+static volatile uint32_t s_last_esr = 0U;
+static volatile uint32_t s_tx_fail_count = 0U;
+static volatile uint8_t s_last_tx_status = CAN_TxStatus_Ok;
+static volatile uint8_t s_last_tec = 0U;
+static volatile uint8_t s_last_rec = 0U;
+static volatile uint8_t s_last_lec = 0U;
 
 static uint16_t prvCanStdIdToFilterReg(uint16_t std_id)
 {
 	return (uint16_t)((std_id & 0x7FFU) << 5);
+}
+
+static void prvSnapshotCanDiag(uint8_t tx_status)
+{
+	s_last_esr = CAN1->ESR;
+	s_last_tec = CAN_GetLSBTransmitErrorCounter(CAN1);
+	s_last_rec = CAN_GetReceiveErrorCounter(CAN1);
+	s_last_lec = (uint8_t)((CAN1->ESR >> 4) & 0x07U);
+	s_last_tx_status = tx_status;
+
+	if(tx_status != CAN_TxStatus_Ok)
+	{
+		s_tx_fail_count++;
+	}
 }
 
 void MyCAN_Init(void)
@@ -33,15 +55,15 @@ void MyCAN_Init(void)
 	CAN_InitStructure.CAN_RFLM = DISABLE;
 	CAN_InitStructure.CAN_AWUM = DISABLE;
 	CAN_InitStructure.CAN_TTCM = DISABLE;
-	CAN_InitStructure.CAN_ABOM = DISABLE;
+	CAN_InitStructure.CAN_ABOM = ENABLE;
 	CAN_Init(CAN1, &CAN_InitStructure);
 	
 	CAN_FilterInitTypeDef CAN_FilterInitStructure;
 	CAN_FilterInitStructure.CAN_FilterNumber = 0;
 	CAN_FilterInitStructure.CAN_FilterIdHigh = prvCanStdIdToFilterReg(CAN_ID_BODY_CMD);
-	CAN_FilterInitStructure.CAN_FilterIdLow = prvCanStdIdToFilterReg(CAN_ID_NODE_HEARTBEAT);
+	CAN_FilterInitStructure.CAN_FilterIdLow = prvCanStdIdToFilterReg(CAN_ID_GATEWAY_HEARTBEAT);
 	CAN_FilterInitStructure.CAN_FilterMaskIdHigh = prvCanStdIdToFilterReg(CAN_ID_BODY_CMD);
-	CAN_FilterInitStructure.CAN_FilterMaskIdLow = prvCanStdIdToFilterReg(CAN_ID_NODE_HEARTBEAT);
+	CAN_FilterInitStructure.CAN_FilterMaskIdLow = prvCanStdIdToFilterReg(CAN_ID_GATEWAY_HEARTBEAT);
 	CAN_FilterInitStructure.CAN_FilterScale = CAN_FilterScale_16bit;
 	CAN_FilterInitStructure.CAN_FilterMode = CAN_FilterMode_IdList;
 	CAN_FilterInitStructure.CAN_FilterFIFOAssignment = CAN_Filter_FIFO0;
@@ -49,9 +71,11 @@ void MyCAN_Init(void)
 	CAN_FilterInit(&CAN_FilterInitStructure);
 }
 
-void MyCAN_Transmit(uint32_t ID, uint8_t Length, uint8_t *Data)
+int MyCAN_Transmit(uint32_t ID, uint8_t Length, uint8_t *Data)
 {
 	CanTxMsg TxMessage;
+	uint8_t tx_status = CAN_TxStatus_Failed;
+
 	TxMessage.StdId = ID;
 	TxMessage.ExtId = ID;
 	TxMessage.IDE = CAN_Id_Standard;
@@ -63,16 +87,26 @@ void MyCAN_Transmit(uint32_t ID, uint8_t Length, uint8_t *Data)
 	}
 	
 	uint8_t TransmitMailbox = CAN_Transmit(CAN1, &TxMessage);
+	if (TransmitMailbox == CAN_TxStatus_NoMailBox)
+	{
+		prvSnapshotCanDiag(CAN_TxStatus_NoMailBox);
+		return -1;
+	}
 	
 	uint32_t Timeout = 0;
-	while (CAN_TransmitStatus(CAN1, TransmitMailbox) != CAN_TxStatus_Ok)
+	while ((tx_status = CAN_TransmitStatus(CAN1, TransmitMailbox)) == CAN_TxStatus_Pending)
 	{
 		Timeout ++;
 		if (Timeout > 100000)
 		{
-			break;
+			CAN_CancelTransmit(CAN1, TransmitMailbox);
+			prvSnapshotCanDiag(CAN_TxStatus_Pending);
+			return -1;
 		}
 	}
+
+	prvSnapshotCanDiag(tx_status);
+	return (tx_status == CAN_TxStatus_Ok) ? 0 : -1;
 }
 
 uint8_t MyCAN_ReceiveFlag(void)
@@ -110,4 +144,19 @@ void MyCAN_Receive(uint32_t *ID, uint8_t *Length, uint8_t *Data)
 	{
 		*Length = 0;
 	}
+}
+
+void MyCAN_GetDiag(MyCanDiag *diag)
+{
+	if (diag == 0)
+	{
+		return;
+	}
+
+	diag->esr = s_last_esr;
+	diag->tec = s_last_tec;
+	diag->rec = s_last_rec;
+	diag->lec = s_last_lec;
+	diag->tx_fail_count = s_tx_fail_count;
+	diag->last_tx_status = s_last_tx_status;
 }

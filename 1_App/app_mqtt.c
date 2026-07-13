@@ -37,7 +37,8 @@ extern volatile uint32_t g_can_seq_match_count;
 extern volatile uint32_t g_can_seq_mismatch_count;
 extern volatile uint8_t g_can_last_seq_expected;
 extern volatile uint8_t g_can_last_seq_observed;
-extern volatile uint8_t g_can_node_mode;
+extern volatile uint8_t g_can_gateway_mode;
+extern volatile uint8_t g_can_slave_mode;
 extern volatile uint8_t g_can_body_status;
 extern volatile uint8_t g_can_status_dirty;
 extern volatile uint8_t g_can_slave_online;
@@ -45,7 +46,11 @@ extern volatile uint32_t g_can_slave_timeout_count;
 extern volatile uint32_t g_can_last_slave_rx_age_ms;
 extern volatile uint32_t g_can_dtc_mask;
 extern volatile uint8_t g_can_last_dtc;
+extern volatile uint32_t g_can_cmd_drop_count;
+extern volatile uint32_t g_can_isr_drop_count;
+extern volatile uint32_t g_can_uplink_drop_count;
 extern volatile uint32_t g_mqtt_reconn_count;
+extern void CAN_RecordCommandQueueDrop(void);
 
 /* ========== MQTT 服务器参数 ========== */
 const static char clientID[] = "STM32_SmartHome_F407";
@@ -138,7 +143,7 @@ static void prvPublishGatewayStatus(MQTTClient *client)
 	}
 
 	written = snprintf(payload, sizeof(payload),
-		"{\"src\":\"bcm\",\"frame\":\"node_status\",\"node_mode\":%u,"
+		"{\"src\":\"bcm\",\"frame\":\"node_status\",\"gateway_mode\":%u,\"slave_mode\":%u,"
 		"\"output_mask\":%u,\"lamp\":%s,\"hazard\":%s,\"fan\":%s,"
 		"\"can_tx_cnt\":%lu,\"can_rx_cnt\":%lu,\"last_rx_id\":%lu,"
 		"\"can_tx_fail_cnt\":%lu,\"last_cmd_seq\":%u,\"last_status_seq\":%u,"
@@ -146,9 +151,11 @@ static void prvPublishGatewayStatus(MQTTClient *client)
 		"\"seq_match_cnt\":%lu,\"seq_mismatch_cnt\":%lu,"
 		"\"seq_expected\":%u,\"seq_observed\":%u,"
 		"\"dtc_mask\":%lu,\"last_dtc\":%u,"
+		"\"cmd_drop_cnt\":%lu,\"isr_drop_cnt\":%lu,\"uplink_drop_cnt\":%lu,"
 		"\"slave_online\":%s,\"slave_timeout_cnt\":%lu,\"last_slave_age_ms\":%lu,"
 		"\"mqtt_state\":%d,\"mqtt_reconn_cnt\":%lu}",
-		(unsigned)g_can_node_mode,
+		(unsigned)g_can_gateway_mode,
+		(unsigned)g_can_slave_mode,
 		(unsigned)g_can_body_status,
 		(g_can_body_status & CAN_BODY_CTRL_LAMP) ? "true" : "false",
 		(g_can_body_status & CAN_BODY_CTRL_HAZARD) ? "true" : "false",
@@ -168,6 +175,9 @@ static void prvPublishGatewayStatus(MQTTClient *client)
 		(unsigned)g_can_last_seq_observed,
 		(unsigned long)g_can_dtc_mask,
 		(unsigned)g_can_last_dtc,
+		(unsigned long)g_can_cmd_drop_count,
+		(unsigned long)g_can_isr_drop_count,
+		(unsigned long)g_can_uplink_drop_count,
 		g_can_slave_online ? "true" : "false",
 		(unsigned long)g_can_slave_timeout_count,
 		(unsigned long)g_can_last_slave_rx_age_ms,
@@ -297,6 +307,7 @@ void messageArrived(MessageData* data)
 				{
 					if(xQueueSendToBack(xCanTxQueue, &frame, 0) != pdPASS)
 					{
+						CAN_RecordCommandQueueDrop();
 						printf("[MQTT] CAN TX queue full\r\n");
 					}
 					else
@@ -471,7 +482,8 @@ static void prvMQTTEchoTask(void *pvParameters)
 			while(xCanRxQueue != NULL &&
 				xQueueReceive(xCanRxQueue, &can_frame, 0) == pdPASS)
 			{
-				if(can_frame.id != CAN_ID_NODE_HEARTBEAT)
+				if(can_frame.id != CAN_ID_GATEWAY_HEARTBEAT &&
+					can_frame.id != CAN_ID_SLAVE_HEARTBEAT)
 				{
 					printf("[MQTT] CAN RX dequeued for uplink: id=0x%03lX dlc=%u data0=0x%02X\r\n",
 						(unsigned long)can_frame.id,

@@ -39,13 +39,17 @@ extern volatile uint32_t g_can_seq_match_count;
 extern volatile uint32_t g_can_seq_mismatch_count;
 extern volatile uint8_t g_can_last_seq_expected;
 extern volatile uint8_t g_can_last_seq_observed;
-extern volatile uint8_t g_can_node_mode;
+extern volatile uint8_t g_can_gateway_mode;
+extern volatile uint8_t g_can_slave_mode;
 extern volatile uint8_t g_can_body_status;
 extern volatile uint8_t g_can_slave_online;
 extern volatile uint32_t g_can_slave_timeout_count;
 extern volatile uint32_t g_can_last_slave_rx_age_ms;
 extern volatile uint32_t g_can_dtc_mask;
 extern volatile uint8_t g_can_last_dtc;
+extern volatile uint32_t g_can_cmd_drop_count;
+extern volatile uint32_t g_can_isr_drop_count;
+extern volatile uint32_t g_can_uplink_drop_count;
 extern TaskHandle_t ledTaskHandle;
 extern TaskHandle_t keyTaskHandle;
 TaskHandle_t xMqttTaskHandle = NULL;
@@ -61,7 +65,9 @@ static void vDiagnosticTask(void *pvParameters)
 		printf("Uptime:       %lu ticks\n", (unsigned long)xTaskGetTickCount());
 		printf("MQTT state:   %d\n", (int)g_mqtt_state);
 		printf("MQTT reconns: %lu\n", (unsigned long)g_mqtt_reconn_count);
-		printf("CAN mode:     %u\n", (unsigned)g_can_node_mode);
+		printf("CAN mode:     gateway=%u slave=%u\n",
+			(unsigned)g_can_gateway_mode,
+			(unsigned)g_can_slave_mode);
 		printf("CAN body:     0x%02X\n", (unsigned)g_can_body_status);
 		printf("CAN tx/rx:    %lu / %lu\n",
 			(unsigned long)g_can_tx_count,
@@ -85,6 +91,10 @@ static void vDiagnosticTask(void *pvParameters)
 		printf("CAN dtc:      mask=0x%08lX last=0x%02X\n",
 			(unsigned long)g_can_dtc_mask,
 			(unsigned)g_can_last_dtc);
+		printf("CAN drops:    cmd=%lu isr=%lu uplink=%lu\n",
+			(unsigned long)g_can_cmd_drop_count,
+			(unsigned long)g_can_isr_drop_count,
+			(unsigned long)g_can_uplink_drop_count);
 		printf("CAN slave:    online=%u timeout=%lu age=%lu ms\n",
 			(unsigned)g_can_slave_online,
 			(unsigned long)g_can_slave_timeout_count,

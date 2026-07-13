@@ -13,11 +13,11 @@
 
 static CAN_HandleTypeDef hcan1;
 static CAN_TxHeaderTypeDef TxHeader;
-static CAN_RxHeaderTypeDef RxHeader;
 static uint32_t TxMailbox;
 static volatile uint32_t s_can_error_snapshot = 0U;
 static volatile uint32_t s_can_esr_snapshot = 0U;
 static volatile uint8_t s_can_error_pending = 0U;
+static volatile uint32_t s_can_rx_drop_count = 0U;
 
 typedef struct
 {
@@ -97,13 +97,13 @@ int Driver_CAN_Init(void)
 #if CAN_LINK_MODE == CAN_LINK_MODE_LOOPBACK
 	sFilterConfig.FilterIdHigh = prvCanStdIdToFilterReg(CAN_ID_BODY_CMD);
 	sFilterConfig.FilterIdLow = prvCanStdIdToFilterReg(CAN_ID_BODY_STATUS);
-	sFilterConfig.FilterMaskIdHigh = prvCanStdIdToFilterReg(CAN_ID_NODE_HEARTBEAT);
-	sFilterConfig.FilterMaskIdLow = prvCanStdIdToFilterReg(CAN_ID_BODY_STATUS);
+	sFilterConfig.FilterMaskIdHigh = prvCanStdIdToFilterReg(CAN_ID_GATEWAY_HEARTBEAT);
+	sFilterConfig.FilterMaskIdLow = prvCanStdIdToFilterReg(CAN_ID_SLAVE_HEARTBEAT);
 #else
 	sFilterConfig.FilterIdHigh = prvCanStdIdToFilterReg(CAN_ID_BODY_STATUS);
-	sFilterConfig.FilterIdLow = prvCanStdIdToFilterReg(CAN_ID_NODE_HEARTBEAT);
+	sFilterConfig.FilterIdLow = prvCanStdIdToFilterReg(CAN_ID_SLAVE_HEARTBEAT);
 	sFilterConfig.FilterMaskIdHigh = prvCanStdIdToFilterReg(CAN_ID_BODY_STATUS);
-	sFilterConfig.FilterMaskIdLow = prvCanStdIdToFilterReg(CAN_ID_NODE_HEARTBEAT);
+	sFilterConfig.FilterMaskIdLow = prvCanStdIdToFilterReg(CAN_ID_SLAVE_HEARTBEAT);
 #endif
 	sFilterConfig.FilterFIFOAssignment = CAN_RX_FIFO0;
 	sFilterConfig.FilterActivation = ENABLE;
@@ -175,6 +175,18 @@ uint8_t Driver_CAN_TakeErrorSnapshot(uint32_t *error, uint32_t *esr)
 	return 1U;
 }
 
+uint32_t Driver_CAN_TakeRxDropCount(void)
+{
+	uint32_t count = 0U;
+
+	taskENTER_CRITICAL();
+	count = s_can_rx_drop_count;
+	s_can_rx_drop_count = 0U;
+	taskEXIT_CRITICAL();
+
+	return count;
+}
+
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
 	CAN_RxHeaderTypeDef rx_header = {0};
@@ -208,7 +220,10 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 
 		if(s_can_rx_isr_queue != NULL)
 		{
-			(void)xQueueSendFromISR(s_can_rx_isr_queue, &frame, &xHigherPriorityTaskWoken);
+			if(xQueueSendFromISR(s_can_rx_isr_queue, &frame, &xHigherPriorityTaskWoken) != pdPASS)
+			{
+				s_can_rx_drop_count++;
+			}
 		}
 	}
 

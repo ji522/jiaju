@@ -9,7 +9,12 @@
 
 uint8_t BodyOutputMask = 0;
 uint8_t LastCmdSeq = 0;
-uint8_t BodyNodeMode = CAN_NODE_NORMAL;
+uint8_t BodyNodeMode = CAN_NODE_INIT;
+
+static void BCM_RecordTxFailure(void)
+{
+	BodyNodeMode = CAN_NODE_FAULT;
+}
 
 static void BCM_ApplyOutputs(uint8_t bodyMask)
 {
@@ -43,7 +48,10 @@ static void BCM_SendBodyStatus(void)
 	TxData[CAN_BODY_STATUS_BYTE_MASK] = BodyOutputMask;
 	TxData[CAN_BODY_STATUS_BYTE_MODE] = BodyNodeMode;
 	TxData[CAN_BODY_STATUS_BYTE_SEQ] = LastCmdSeq;
-	MyCAN_Transmit(CAN_ID_BODY_STATUS, 3, TxData);
+	if (MyCAN_Transmit(CAN_ID_BODY_STATUS, 3, TxData) != 0)
+	{
+		BCM_RecordTxFailure();
+	}
 }
 
 static void BCM_SendHeartbeat(void)
@@ -53,7 +61,10 @@ static void BCM_SendHeartbeat(void)
 	TxData[CAN_HEARTBEAT_BYTE_MODE] = BodyNodeMode;
 	TxData[CAN_HEARTBEAT_BYTE_MASK] = BodyOutputMask;
 	TxData[CAN_HEARTBEAT_BYTE_SEQ] = LastCmdSeq;
-	MyCAN_Transmit(CAN_ID_NODE_HEARTBEAT, 3, TxData);
+	if (MyCAN_Transmit(CAN_ID_SLAVE_HEARTBEAT, 3, TxData) != 0)
+	{
+		BCM_RecordTxFailure();
+	}
 }
 
 int main(void)
@@ -63,7 +74,6 @@ int main(void)
 	uint8_t RxData[8] = {0};
 	uint16_t linkAliveMs = 0;
 	uint16_t heartbeatElapsedMs = 0;
-	uint8_t masterSeen = 0;
 
 	LED_Init();
 	LED1_OFF();
@@ -76,39 +86,41 @@ int main(void)
 		{
 			MyCAN_Receive(&RxID, &RxLength, RxData);
 
-			if (RxID == CAN_ID_BODY_CMD && RxLength >= 1U)
+			if (RxID == CAN_ID_BODY_CMD &&
+				RxLength == 2U &&
+				(RxData[CAN_BODY_CMD_BYTE_MASK] &
+					(uint8_t)~(CAN_BODY_CTRL_LAMP | CAN_BODY_CTRL_HAZARD | CAN_BODY_CTRL_FAN)) == 0U)
 			{
-				LastCmdSeq = (RxLength > CAN_BODY_CMD_BYTE_SEQ) ?
-					RxData[CAN_BODY_CMD_BYTE_SEQ] : 0U;
+				LastCmdSeq = RxData[CAN_BODY_CMD_BYTE_SEQ];
 				BodyNodeMode = CAN_NODE_NORMAL;
-				masterSeen = 1U;
 				linkAliveMs = 0U;
 				BCM_ApplyOutputs(RxData[CAN_BODY_CMD_BYTE_MASK]);
 				BCM_SendBodyStatus();
 			}
-			else if (RxID == CAN_ID_NODE_HEARTBEAT)
+			else if (RxID == CAN_ID_GATEWAY_HEARTBEAT &&
+				RxLength == 5U &&
+				RxData[CAN_HEARTBEAT_BYTE_MODE] <= CAN_NODE_FAULT)
 			{
 				/* Treat a valid master heartbeat as link-alive traffic so
 				 * event-driven actuator outputs are not misclassified as faults. */
-				BodyNodeMode = CAN_NODE_NORMAL;
-				masterSeen = 1U;
+				if (BodyNodeMode != CAN_NODE_FAULT)
+				{
+					BodyNodeMode = CAN_NODE_NORMAL;
+				}
 				linkAliveMs = 0U;
 			}
 		}
 
-		if (masterSeen != 0U)
+		if (linkAliveMs < BCM_LINK_TIMEOUT_MS)
 		{
-			if (linkAliveMs < BCM_LINK_TIMEOUT_MS)
-			{
-				linkAliveMs++;
-			}
-			else if (BodyNodeMode != CAN_NODE_DEGRADED)
-			{
-				/* Link timeout only degrades the node state.
-				 * Keep the last valid actuator output instead of forcing it off. */
-				BodyNodeMode = CAN_NODE_DEGRADED;
-				BCM_SendBodyStatus();
-			}
+			linkAliveMs++;
+		}
+		else if (BodyNodeMode != CAN_NODE_DEGRADED && BodyNodeMode != CAN_NODE_FAULT)
+		{
+			/* Link timeout only degrades the node state.
+			 * Keep the last valid actuator output instead of forcing it off. */
+			BodyNodeMode = CAN_NODE_DEGRADED;
+			BCM_SendBodyStatus();
 		}
 
 		heartbeatElapsedMs++;

@@ -17,7 +17,8 @@
 /* Application-level CAN IDs used by the BCM demo network. */
 #define CAN_ID_BODY_CMD         0x100U
 #define CAN_ID_BODY_STATUS      0x101U
-#define CAN_ID_NODE_HEARTBEAT   0x1F0U
+#define CAN_ID_GATEWAY_HEARTBEAT 0x1F0U
+#define CAN_ID_SLAVE_HEARTBEAT   0x1F1U
 
 /* Byte0 bits used by BODY_CMD/BODY_STATUS. */
 #define CAN_BODY_CTRL_LAMP      (1U << 0)
@@ -58,12 +59,14 @@ typedef enum
 	CAN_DTC_TX_FAIL = 0x01U,
 	CAN_DTC_NODE_TIMEOUT = 0x02U,
 	CAN_DTC_SEQ_TIMEOUT = 0x03U,
-	CAN_DTC_SEQ_MISMATCH = 0x04U
+	CAN_DTC_SEQ_MISMATCH = 0x04U,
+	CAN_DTC_QUEUE_OVERFLOW = 0x05U
 } CanDtcCode;
 
 #define CAN_DTC_MASK_TX_FAIL       (1UL << 0)
 #define CAN_DTC_MASK_NODE_TIMEOUT  (1UL << 1)
 #define CAN_DTC_MASK_SEQ_TIMEOUT   (1UL << 2)
 #define CAN_DTC_MASK_SEQ_MISMATCH  (1UL << 3)
+#define CAN_DTC_MASK_QUEUE_OVERFLOW (1UL << 4)
 
 #endif

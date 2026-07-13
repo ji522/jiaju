@@ -6,12 +6,27 @@
 #include "driver_can.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "queue.h"
 #include <stdio.h>
+
+#define CAN_RX_ISR_QUEUE_LENGTH 16U
 
 static CAN_HandleTypeDef hcan1;
 static CAN_TxHeaderTypeDef TxHeader;
 static CAN_RxHeaderTypeDef RxHeader;
 static uint32_t TxMailbox;
+static volatile uint32_t s_can_error_snapshot = 0U;
+static volatile uint32_t s_can_esr_snapshot = 0U;
+static volatile uint8_t s_can_error_pending = 0U;
+
+typedef struct
+{
+	uint32_t id;
+	uint8_t len;
+	uint8_t data[8];
+} DriverCanRxFrame;
+
+static QueueHandle_t s_can_rx_isr_queue = NULL;
 
 static uint16_t prvCanStdIdToFilterReg(uint16_t std_id)
 {
@@ -38,8 +53,10 @@ void HAL_CAN_MspInit(CAN_HandleTypeDef *hcan)
 	GPIO_InitStruct.Alternate = GPIO_AF9_CAN1;
 	HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-	/* Current loopback test uses polling in Driver_CAN_Recv(), so RX interrupts
-	 * are intentionally left disabled to avoid mixing two receive paths. */
+	HAL_NVIC_SetPriority(CAN1_RX0_IRQn, 5, 0);
+	HAL_NVIC_EnableIRQ(CAN1_RX0_IRQn);
+	HAL_NVIC_SetPriority(CAN1_SCE_IRQn, 5, 0);
+	HAL_NVIC_EnableIRQ(CAN1_SCE_IRQn);
 }
 
 int Driver_CAN_Init(void)
@@ -104,12 +121,110 @@ int Driver_CAN_Init(void)
 		return -1;
 	}
 
+	if(HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING) != HAL_OK)
+	{
+		printf("[CAN] ActivateNotification failed\r\n");
+		return -1;
+	}
+
+	if(HAL_CAN_ActivateNotification(&hcan1,
+		CAN_IT_ERROR_WARNING |
+		CAN_IT_ERROR_PASSIVE |
+		CAN_IT_BUSOFF |
+		CAN_IT_LAST_ERROR_CODE) != HAL_OK)
+	{
+		printf("[CAN] ActivateErrorNotification failed\r\n");
+		return -1;
+	}
+
+	if(s_can_rx_isr_queue != NULL)
+	{
+		vQueueDelete(s_can_rx_isr_queue);
+		s_can_rx_isr_queue = NULL;
+	}
+	s_can_rx_isr_queue = xQueueCreate(CAN_RX_ISR_QUEUE_LENGTH, sizeof(DriverCanRxFrame));
+	if(s_can_rx_isr_queue == NULL)
+	{
+		printf("[CAN] RX ISR queue create failed\r\n");
+		return -1;
+	}
+
 #if CAN_LINK_MODE == CAN_LINK_MODE_LOOPBACK
 	printf("[CAN] Init OK (loopback 250kbps)\r\n");
 #else
 	printf("[CAN] Init OK (normal 250kbps)\r\n");
 #endif
 	return 0;
+}
+
+void Driver_CAN_IRQHandler(void)
+{
+	HAL_CAN_IRQHandler(&hcan1);
+}
+
+uint8_t Driver_CAN_TakeErrorSnapshot(uint32_t *error, uint32_t *esr)
+{
+	if(error == NULL || esr == NULL || s_can_error_pending == 0U)
+	{
+		return 0U;
+	}
+
+	*error = s_can_error_snapshot;
+	*esr = s_can_esr_snapshot;
+	s_can_error_pending = 0U;
+	return 1U;
+}
+
+void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
+{
+	CAN_RxHeaderTypeDef rx_header = {0};
+	uint8_t rx_data[8] = {0};
+	BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
+	if(hcan == NULL || hcan->Instance != CAN1)
+	{
+		return;
+	}
+
+	while(HAL_CAN_GetRxFifoFillLevel(hcan, CAN_RX_FIFO0) > 0U)
+	{
+		DriverCanRxFrame frame = {0};
+
+		if(HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rx_header, rx_data) != HAL_OK)
+		{
+			break;
+		}
+
+		frame.id = (rx_header.IDE == CAN_ID_STD) ? rx_header.StdId : rx_header.ExtId;
+		frame.len = (rx_header.RTR == CAN_RTR_DATA) ? rx_header.DLC : 0U;
+		for(uint8_t i = 0; i < frame.len; ++i)
+		{
+			frame.data[i] = rx_data[i];
+		}
+		for(uint8_t i = frame.len; i < 8U; ++i)
+		{
+			frame.data[i] = 0U;
+		}
+
+		if(s_can_rx_isr_queue != NULL)
+		{
+			(void)xQueueSendFromISR(s_can_rx_isr_queue, &frame, &xHigherPriorityTaskWoken);
+		}
+	}
+
+	portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
+
+void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan)
+{
+	if(hcan == NULL || hcan->Instance != CAN1)
+	{
+		return;
+	}
+
+	s_can_error_snapshot = HAL_CAN_GetError(hcan);
+	s_can_esr_snapshot = hcan->Instance->ESR;
+	s_can_error_pending = 1U;
 }
 
 int Driver_CAN_Send(uint32_t id, uint8_t *data, uint8_t len)
@@ -148,26 +263,30 @@ int Driver_CAN_Send(uint32_t id, uint8_t *data, uint8_t len)
 
 int Driver_CAN_Recv(uint32_t *id, uint8_t *data, uint8_t *len, uint32_t timeout_ms)
 {
-	uint32_t start = xTaskGetTickCount();
+	DriverCanRxFrame frame = {0};
 
-	while((xTaskGetTickCount() - start) < pdMS_TO_TICKS(timeout_ms))
+	if(id == NULL || data == NULL || len == NULL || s_can_rx_isr_queue == NULL)
 	{
-		if(HAL_CAN_GetRxFifoFillLevel(&hcan1, CAN_RX_FIFO0) == 0U)
-		{
-			vTaskDelay(1);
-			continue;
-		}
-
-		if(HAL_CAN_GetRxMessage(&hcan1, CAN_RX_FIFO0, &RxHeader, data) == HAL_OK)
-		{
-			*id = RxHeader.StdId;
-			*len = RxHeader.DLC;
-			return 0;
-		}
-		vTaskDelay(1);
+		return -1;
 	}
 
-	return -1;
+	if(xQueueReceive(s_can_rx_isr_queue, &frame, pdMS_TO_TICKS(timeout_ms)) != pdPASS)
+	{
+		return -1;
+	}
+
+	*id = frame.id;
+	*len = frame.len;
+	for(uint8_t i = 0; i < frame.len; ++i)
+	{
+		data[i] = frame.data[i];
+	}
+	for(uint8_t i = frame.len; i < 8U; ++i)
+	{
+		data[i] = 0U;
+	}
+
+	return 0;
 }
 
 uint32_t Driver_CAN_GetError(void)

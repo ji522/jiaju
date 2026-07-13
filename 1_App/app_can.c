@@ -111,6 +111,27 @@ static void prvRecordCanTxFailure(uint32_t frame_id)
 		(unsigned long)g_can_tx_fail_count);
 }
 
+static void prvConsumeCanErrorSnapshot(void)
+{
+	uint32_t error = 0U;
+	uint32_t esr = 0U;
+
+	if(Driver_CAN_TakeErrorSnapshot(&error, &esr) == 0U)
+	{
+		return;
+	}
+
+	g_can_last_error = error;
+	g_can_last_esr = esr;
+	g_can_node_mode = CAN_NODE_DEGRADED;
+	prvRaiseDtc(CAN_DTC_MASK_TX_FAIL, CAN_DTC_TX_FAIL);
+	g_can_status_dirty = 1U;
+
+	printf("[CAN] Error IRQ: err=0x%08lX esr=0x%08lX\r\n",
+		(unsigned long)error,
+		(unsigned long)esr);
+}
+
 static void prvNoteSlaveActivity(uint32_t frame_id)
 {
 	s_last_slave_rx_tick = xTaskGetTickCount();
@@ -315,6 +336,8 @@ void CanTask(void *parameter)
 
 	while(1)
 	{
+		prvConsumeCanErrorSnapshot();
+
 		/* 1. Send queued body-control commands generated from MQTT. */
 		while(xCanTxQueue != NULL &&
 			xQueueReceive(xCanTxQueue, &tx_frame, 0) == pdPASS)

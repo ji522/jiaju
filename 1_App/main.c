@@ -11,6 +11,25 @@
 
 void SystemClock_Config(void);
 
+/* Keep the vehicle control path ahead of cloud protocol processing.
+ * Lower-rate UI and diagnostic work must not delay CAN handling. */
+#define APP_TASK_PRIO_DIAG    1U
+#define APP_TASK_PRIO_LED     2U
+#define APP_TASK_PRIO_KEY     4U
+#define APP_TASK_PRIO_MQTT    6U
+#define APP_TASK_PRIO_CAN     8U
+
+#if !(APP_TASK_PRIO_CAN > APP_TASK_PRIO_MQTT && \
+	APP_TASK_PRIO_MQTT > APP_TASK_PRIO_KEY && \
+	APP_TASK_PRIO_KEY > APP_TASK_PRIO_LED && \
+	APP_TASK_PRIO_LED > APP_TASK_PRIO_DIAG)
+#error "Application task priorities must preserve the control-path ordering."
+#endif
+
+#if APP_TASK_PRIO_CAN >= configMAX_PRIORITIES
+#error "Application task priority exceeds configMAX_PRIORITIES."
+#endif
+
 volatile const char *g_pcFreeRTOSFaultReason = NULL;
 volatile const char *g_pcFreeRTOSFaultTaskName = NULL;
 volatile const char *g_pcFreeRTOSAssertFile = NULL;
@@ -130,12 +149,13 @@ int main(void)
 		dbgoutDev->Init(dbgoutDev);
 	}
 
-	vStartMQTTTasks(512, 10);
-	vStartLEDTasks(128, 1);
-	vStartKeyTasks(128, 2);
-	vStartCANTasks(256, 3);
+	vStartMQTTTasks(512, APP_TASK_PRIO_MQTT);
+	vStartLEDTasks(128, APP_TASK_PRIO_LED);
+	vStartKeyTasks(128, APP_TASK_PRIO_KEY);
+	vStartCANTasks(256, APP_TASK_PRIO_CAN);
 
-	if(xTaskCreate(vDiagnosticTask, "Diag", 256, NULL, 0, NULL) != pdPASS)
+	if(xTaskCreate(vDiagnosticTask, "Diag", 256, NULL,
+		APP_TASK_PRIO_DIAG, NULL) != pdPASS)
 	{
 		printf("Create Diag Task failed.\r\n");
 	}

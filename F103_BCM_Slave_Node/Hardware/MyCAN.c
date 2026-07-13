@@ -39,9 +39,9 @@ void MyCAN_Init(void)
 	CAN_FilterInitTypeDef CAN_FilterInitStructure;
 	CAN_FilterInitStructure.CAN_FilterNumber = 0;
 	CAN_FilterInitStructure.CAN_FilterIdHigh = prvCanStdIdToFilterReg(CAN_ID_BODY_CMD);
-	CAN_FilterInitStructure.CAN_FilterIdLow = prvCanStdIdToFilterReg(CAN_ID_BODY_CMD);
+	CAN_FilterInitStructure.CAN_FilterIdLow = prvCanStdIdToFilterReg(CAN_ID_NODE_HEARTBEAT);
 	CAN_FilterInitStructure.CAN_FilterMaskIdHigh = prvCanStdIdToFilterReg(CAN_ID_BODY_CMD);
-	CAN_FilterInitStructure.CAN_FilterMaskIdLow = prvCanStdIdToFilterReg(CAN_ID_BODY_CMD);
+	CAN_FilterInitStructure.CAN_FilterMaskIdLow = prvCanStdIdToFilterReg(CAN_ID_NODE_HEARTBEAT);
 	CAN_FilterInitStructure.CAN_FilterScale = CAN_FilterScale_16bit;
 	CAN_FilterInitStructure.CAN_FilterMode = CAN_FilterMode_IdList;
 	CAN_FilterInitStructure.CAN_FilterFIFOAssignment = CAN_Filter_FIFO0;

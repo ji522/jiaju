@@ -13,6 +13,8 @@ void SystemClock_Config(void);
 
 volatile const char *g_pcFreeRTOSFaultReason = NULL;
 volatile const char *g_pcFreeRTOSFaultTaskName = NULL;
+volatile const char *g_pcFreeRTOSAssertFile = NULL;
+volatile unsigned long g_ulFreeRTOSAssertLine = 0UL;
 
 extern void vStartMQTTTasks(uint16_t usTaskStackSize, UBaseType_t uxTaskPriority);
 extern void vStartLEDTasks(uint16_t usTaskStackSize, UBaseType_t uxTaskPriority);
@@ -157,6 +159,15 @@ void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
 	(void)xTask;
 	g_pcFreeRTOSFaultReason = "stack overflow";
 	g_pcFreeRTOSFaultTaskName = pcTaskName;
+	taskDISABLE_INTERRUPTS();
+	for(;;) {}
+}
+
+void vAssertCalled(const char *file, unsigned long line)
+{
+	g_pcFreeRTOSFaultReason = "configASSERT";
+	g_pcFreeRTOSAssertFile = file;
+	g_ulFreeRTOSAssertLine = line;
 	taskDISABLE_INTERRUPTS();
 	for(;;) {}
 }

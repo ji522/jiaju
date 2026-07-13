@@ -5,6 +5,8 @@
 your application. */
 #include "stm32f4xx_hal.h"
 
+void vAssertCalled(const char *file, unsigned long line);
+
 #define vPortSVCHandler							SVC_Handler
 #define xPortPendSVHandler						PendSV_Handler
 #define xPortSysTickHandler						SysTick_Handler
@@ -68,12 +70,25 @@ your application. */
 #define configTIMER_TASK_STACK_DEPTH            configMINIMAL_STACK_SIZE
 
 /* Interrupt nesting behaviour configuration. */
-#define configKERNEL_INTERRUPT_PRIORITY         255
-#define configMAX_SYSCALL_INTERRUPT_PRIORITY    191
-#define configMAX_API_CALL_INTERRUPT_PRIORITY   191
+#define configPRIO_BITS                                  __NVIC_PRIO_BITS
+#define configLIBRARY_LOWEST_INTERRUPT_PRIORITY          15
+#define configLIBRARY_KERNEL_INTERRUPT_PRIORITY          configLIBRARY_LOWEST_INTERRUPT_PRIORITY
+#define configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY    5
+
+#if ( configPRIO_BITS != 4 )
+#error "Update raw FreeRTOS interrupt priority constants for this MCU."
+#endif
+
+/* Keep the logical priorities explicit above, but materialize the shifted
+ * raw BASEPRI/NVIC values here because the ARMCC CM4F port uses these macros
+ * inside inline assembly and requires plain literals. */
+#define configKERNEL_INTERRUPT_PRIORITY                 0xF0
+#define configMAX_SYSCALL_INTERRUPT_PRIORITY            0x50
+#define configMAX_API_CALL_INTERRUPT_PRIORITY   configMAX_SYSCALL_INTERRUPT_PRIORITY
 
 /* Define to trap errors during development. */
-//#define configASSERT( ( x ) ) if( ( x ) == 0 ) vAssertCalled( __FILE__, __LINE__ )
+#define configASSERT( x ) \
+	do { if( ( x ) == 0 ) vAssertCalled( __FILE__, __LINE__ ); } while( 0 )
 
 /* FreeRTOS MPU specific definitions. */
 #define configINCLUDE_APPLICATION_DEFINED_PRIVILEGED_FUNCTIONS 0

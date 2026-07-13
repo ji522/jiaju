@@ -1,6 +1,9 @@
 #include "stm32f10x.h"                  // Device header
 #include "MyCAN.h"
 #include "BcmProtocol.h"
+#include "Delay.h"
+
+#define CAN_TX_TIMEOUT_MS 5U
 
 static volatile uint32_t s_last_esr = 0U;
 static volatile uint32_t s_tx_fail_count = 0U;
@@ -75,6 +78,13 @@ int MyCAN_Transmit(uint32_t ID, uint8_t Length, uint8_t *Data)
 {
 	CanTxMsg TxMessage;
 	uint8_t tx_status = CAN_TxStatus_Failed;
+	uint32_t start_tick = 0U;
+
+	if(Data == 0 || Length > 8U || ID > 0x7FFU)
+	{
+		prvSnapshotCanDiag(CAN_TxStatus_Failed);
+		return -1;
+	}
 
 	TxMessage.StdId = ID;
 	TxMessage.ExtId = ID;
@@ -93,11 +103,10 @@ int MyCAN_Transmit(uint32_t ID, uint8_t Length, uint8_t *Data)
 		return -1;
 	}
 	
-	uint32_t Timeout = 0;
+	start_tick = Delay_GetTickMs();
 	while ((tx_status = CAN_TransmitStatus(CAN1, TransmitMailbox)) == CAN_TxStatus_Pending)
 	{
-		Timeout ++;
-		if (Timeout > 100000)
+		if ((uint32_t)(Delay_GetTickMs() - start_tick) >= CAN_TX_TIMEOUT_MS)
 		{
 			CAN_CancelTransmit(CAN1, TransmitMailbox);
 			prvSnapshotCanDiag(CAN_TxStatus_Pending);

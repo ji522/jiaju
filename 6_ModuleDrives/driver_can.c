@@ -245,8 +245,15 @@ void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan)
 int Driver_CAN_Send(uint32_t id, uint8_t *data, uint8_t len)
 {
 	uint32_t start_tick = xTaskGetTickCount();
+	uint32_t complete_bit = 0U;
+	uint32_t success_bit = 0U;
+	uint32_t failure_bits = 0U;
+	uint32_t tx_status = 0U;
 
-	if(len > 8) len = 8;
+	if(data == NULL || len > 8U || id > 0x7FFU)
+	{
+		return -1;
+	}
 
 	(void)HAL_CAN_ResetError(&hcan1);
 
@@ -260,6 +267,25 @@ int Driver_CAN_Send(uint32_t id, uint8_t *data, uint8_t len)
 	if(HAL_CAN_AddTxMessage(&hcan1, &TxHeader, data, &TxMailbox) != HAL_OK)
 		return -1;
 
+	if(TxMailbox == CAN_TX_MAILBOX0)
+	{
+		complete_bit = CAN_TSR_RQCP0;
+		success_bit = CAN_TSR_TXOK0;
+		failure_bits = CAN_TSR_TERR0 | CAN_TSR_ALST0;
+	}
+	else if(TxMailbox == CAN_TX_MAILBOX1)
+	{
+		complete_bit = CAN_TSR_RQCP1;
+		success_bit = CAN_TSR_TXOK1;
+		failure_bits = CAN_TSR_TERR1 | CAN_TSR_ALST1;
+	}
+	else
+	{
+		complete_bit = CAN_TSR_RQCP2;
+		success_bit = CAN_TSR_TXOK2;
+		failure_bits = CAN_TSR_TERR2 | CAN_TSR_ALST2;
+	}
+
 	/* Wait until the mailbox really leaves the pending state. This gives the
 	 * upper layer a real TX completion result instead of only trusting that
 	 * HAL_CAN_AddTxMessage accepted the frame. */
@@ -271,6 +297,16 @@ int Driver_CAN_Send(uint32_t id, uint8_t *data, uint8_t len)
 			return -1;
 		}
 		vTaskDelay(1);
+	}
+
+	tx_status = hcan1.Instance->TSR;
+	hcan1.Instance->TSR = complete_bit;
+
+	if((tx_status & complete_bit) == 0U ||
+		(tx_status & success_bit) == 0U ||
+		(tx_status & failure_bits) != 0U)
+	{
+		return -1;
 	}
 
 	return 0;

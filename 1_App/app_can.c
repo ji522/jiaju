@@ -55,6 +55,7 @@ static TickType_t s_last_slave_rx_tick = 0;
 static TickType_t s_pending_cmd_tick = 0;
 static uint8_t s_slave_timeout_latched = 0U;
 static uint8_t s_seq_mismatch_latched = 0U;
+static volatile uint8_t s_clear_diagnostics_requested = 0U;
 
 static uint8_t prvIsValidBodyMask(uint8_t mask)
 {
@@ -71,19 +72,27 @@ static uint8_t prvIsHeartbeatFrameId(uint32_t frame_id)
 	return frame_id == CAN_ID_GATEWAY_HEARTBEAT || frame_id == CAN_ID_SLAVE_HEARTBEAT;
 }
 
-void CAN_ClearDiagnostics(void)
+void CAN_RequestClearDiagnostics(void)
+{
+	taskENTER_CRITICAL();
+	s_clear_diagnostics_requested = 1U;
+	taskEXIT_CRITICAL();
+}
+
+static void prvClearDiagnostics(void)
 {
 	g_can_tx_fail_count = 0U;
 	g_can_last_tx_fail_id = 0U;
 	g_can_last_error = 0U;
 	g_can_last_esr = 0U;
-	g_can_seq_consistent = 1U;
 	g_can_seq_match_count = 0U;
 	g_can_seq_mismatch_count = 0U;
-	g_can_last_seq_expected = 0U;
-	g_can_last_seq_observed = 0U;
-	g_can_pending_cmd_seq = 0U;
-	g_can_pending_cmd_active = 0U;
+	if(g_can_pending_cmd_active == 0U)
+	{
+		g_can_seq_consistent = 1U;
+		g_can_last_seq_expected = 0U;
+		g_can_last_seq_observed = 0U;
+	}
 	g_can_dtc_mask = 0U;
 	g_can_last_dtc = CAN_DTC_NONE;
 	g_can_slave_timeout_count = 0U;
@@ -210,6 +219,13 @@ static void prvNoteSlaveActivity(uint32_t frame_id)
 		g_can_status_dirty = 1U;
 		printf("[CAN] Slave online: id=0x%03lX\r\n", (unsigned long)(frame_id & 0x7FFU));
 	}
+
+	if(g_can_gateway_mode == CAN_NODE_DEGRADED)
+	{
+		g_can_gateway_mode = CAN_NODE_NORMAL;
+		g_can_status_dirty = 1U;
+		printf("[CAN] Gateway recovered after valid slave traffic\r\n");
+	}
 }
 
 static void prvCheckSlaveTimeout(void)
@@ -300,11 +316,11 @@ static void prvBuildHeartbeatFrame(CanFrame *frame)
 	memset(&frame->data[5], 0, 3);
 }
 
-static void prvHandleReceivedFrame(const CanFrame *frame)
+static uint8_t prvHandleReceivedFrame(const CanFrame *frame)
 {
 	if(frame == NULL)
 	{
-		return;
+		return 0U;
 	}
 
 	g_can_last_rx_id = frame->id;
@@ -321,6 +337,7 @@ static void prvHandleReceivedFrame(const CanFrame *frame)
 		g_can_slave_mode = CAN_NODE_NORMAL;
 		g_can_status_dirty = 1U;
 		prvApplyBodyStatus(g_can_body_status);
+		return 1U;
 #endif
 	}
 	else if(frame->id == CAN_ID_BODY_STATUS &&
@@ -344,6 +361,7 @@ static void prvHandleReceivedFrame(const CanFrame *frame)
 			g_can_status_dirty = 1U;
 		}
 		prvApplyBodyStatus(g_can_body_status);
+		return 1U;
 	}
 	else if(frame->id == CAN_ID_SLAVE_HEARTBEAT &&
 		frame->dlc == 3U &&
@@ -365,7 +383,10 @@ static void prvHandleReceivedFrame(const CanFrame *frame)
 		{
 			g_can_status_dirty = 1U;
 		}
+		return 1U;
 	}
+
+	return 0U;
 }
 
 void CanTask(void *parameter)
@@ -375,6 +396,8 @@ void CanTask(void *parameter)
 	uint32_t rx_id = 0;
 	uint8_t rx_data[8] = {0};
 	uint8_t rx_len = 0;
+	uint8_t frame_valid = 0U;
+	uint8_t clear_diagnostics = 0U;
 	TickType_t xLastHeartbeatTick = xTaskGetTickCount();
 
 	(void)parameter;
@@ -404,6 +427,15 @@ void CanTask(void *parameter)
 
 	while(1)
 	{
+		taskENTER_CRITICAL();
+		clear_diagnostics = s_clear_diagnostics_requested;
+		s_clear_diagnostics_requested = 0U;
+		taskEXIT_CRITICAL();
+		if(clear_diagnostics != 0U)
+		{
+			prvClearDiagnostics();
+		}
+
 		prvConsumeCanErrorSnapshot();
 		prvConsumeDriverRxDrops();
 
@@ -478,9 +510,11 @@ void CanTask(void *parameter)
 						(unsigned)rx_frame.data[CAN_BODY_STATUS_BYTE_SEQ] : 0U);
 			}
 
-			prvHandleReceivedFrame(&rx_frame);
+			frame_valid = prvHandleReceivedFrame(&rx_frame);
 
-			if(xCanRxQueue != NULL && prvIsHeartbeatFrameId(rx_frame.id) == 0U)
+			if(frame_valid != 0U &&
+				xCanRxQueue != NULL &&
+				prvIsHeartbeatFrameId(rx_frame.id) == 0U)
 			{
 				if(xQueueSendToBack(xCanRxQueue, &rx_frame, 0) != pdPASS)
 				{

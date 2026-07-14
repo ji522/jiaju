@@ -492,7 +492,7 @@ void CanTask(void *parameter)
 			}
 		}
 
-		/* 3. Drain loopback or bus RX frames, then mirror them to the RX queue for MQTT uplink. */
+		/* 3. Drain frames staged by the CAN RX interrupt, then mirror them to the RX queue for MQTT uplink. */
 		while(Driver_CAN_Recv(&rx_id, rx_data, &rx_len, CAN_RX_POLL_TIMEOUT_MS) == 0)
 		{
 			memset(&rx_frame, 0, sizeof(rx_frame));

@@ -10,6 +10,8 @@ typedef struct
 	uint8_t rec;
 	uint8_t lec;
 	uint32_t tx_fail_count;
+	uint32_t rx_irq_count;
+	uint32_t rx_drop_count;
 	uint8_t last_tx_status;
 } MyCanDiag;
 
@@ -18,5 +20,6 @@ int MyCAN_Transmit(uint32_t ID, uint8_t Length, uint8_t *Data);
 uint8_t MyCAN_ReceiveFlag(void);
 void MyCAN_Receive(uint32_t *ID, uint8_t *Length, uint8_t *Data);
 void MyCAN_GetDiag(MyCanDiag *diag);
+void MyCAN_IRQHandler(void);
 
 #endif

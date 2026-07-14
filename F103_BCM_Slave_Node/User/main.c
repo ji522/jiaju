@@ -124,7 +124,7 @@ int main(void)
 	{
 		nowMs = Delay_GetTickMs();
 
-		if (MyCAN_ReceiveFlag())
+		while (MyCAN_ReceiveFlag())
 		{
 			MyCAN_Receive(&RxID, &RxLength, RxData);
 

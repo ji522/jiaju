@@ -24,6 +24,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "stm32f10x_it.h"
 #include "Delay.h"
+#include "MyCAN.h"
 
 /** @addtogroup STM32F10x_StdPeriph_Template
   * @{
@@ -153,6 +154,16 @@ void SysTick_Handler(void)
 /*void PPP_IRQHandler(void)
 {
 }*/
+
+void USB_LP_CAN1_RX0_IRQHandler(void)
+{
+	MyCAN_IRQHandler();
+}
+
+void CAN1_RX0_IRQHandler(void)
+{
+	MyCAN_IRQHandler();
+}
 
 /**
   * @}

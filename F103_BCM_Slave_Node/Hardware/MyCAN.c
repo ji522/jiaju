@@ -1,20 +1,76 @@
 #include "stm32f10x.h"                  // Device header
+#include "misc.h"
 #include "MyCAN.h"
 #include "BcmProtocol.h"
 #include "Delay.h"
 
 #define CAN_TX_TIMEOUT_MS 5U
+#define CAN_RX_QUEUE_LENGTH 8U
+
+typedef struct
+{
+	uint32_t id;
+	uint8_t len;
+	uint8_t data[8];
+} MyCanRxFrame;
 
 static volatile uint32_t s_last_esr = 0U;
 static volatile uint32_t s_tx_fail_count = 0U;
+static volatile uint32_t s_rx_irq_count = 0U;
+static volatile uint32_t s_rx_drop_count = 0U;
 static volatile uint8_t s_last_tx_status = CAN_TxStatus_Ok;
 static volatile uint8_t s_last_tec = 0U;
 static volatile uint8_t s_last_rec = 0U;
 static volatile uint8_t s_last_lec = 0U;
+static volatile uint8_t s_rx_head = 0U;
+static volatile uint8_t s_rx_tail = 0U;
+static volatile MyCanRxFrame s_rx_queue[CAN_RX_QUEUE_LENGTH];
 
 static uint16_t prvCanStdIdToFilterReg(uint16_t std_id)
 {
 	return (uint16_t)((std_id & 0x7FFU) << 5);
+}
+
+static uint8_t prvRxNextIndex(uint8_t index)
+{
+	index++;
+	return (index >= CAN_RX_QUEUE_LENGTH) ? 0U : index;
+}
+
+static void prvQueueRxMessage(const CanRxMsg *rxMessage)
+{
+	uint8_t next_head = 0U;
+	uint8_t len = 0U;
+	uint8_t head = s_rx_head;
+
+	if (rxMessage == 0)
+	{
+		return;
+	}
+
+	next_head = prvRxNextIndex(head);
+	if (next_head == s_rx_tail)
+	{
+		s_rx_drop_count++;
+		return;
+	}
+
+	s_rx_queue[head].id = (rxMessage->IDE == CAN_Id_Standard) ?
+		rxMessage->StdId : rxMessage->ExtId;
+	s_rx_queue[head].len = (rxMessage->RTR == CAN_RTR_Data) ?
+		rxMessage->DLC : 0U;
+	len = s_rx_queue[head].len;
+	for (uint8_t i = 0; i < len; i++)
+	{
+		s_rx_queue[head].data[i] = rxMessage->Data[i];
+	}
+	for (uint8_t i = len; i < 8U; i++)
+	{
+		s_rx_queue[head].data[i] = 0U;
+	}
+
+	s_rx_head = next_head;
+	s_rx_irq_count++;
 }
 
 static void prvSnapshotCanDiag(uint8_t tx_status)
@@ -33,6 +89,8 @@ static void prvSnapshotCanDiag(uint8_t tx_status)
 
 void MyCAN_Init(void)
 {
+	NVIC_InitTypeDef NVIC_InitStructure;
+
 	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE);
 	RCC_APB1PeriphClockCmd(RCC_APB1Periph_CAN1, ENABLE);
 	
@@ -72,6 +130,18 @@ void MyCAN_Init(void)
 	CAN_FilterInitStructure.CAN_FilterFIFOAssignment = CAN_Filter_FIFO0;
 	CAN_FilterInitStructure.CAN_FilterActivation = ENABLE;
 	CAN_FilterInit(&CAN_FilterInitStructure);
+
+	CAN_ITConfig(CAN1, CAN_IT_FMP0, ENABLE);
+
+#ifdef STM32F10X_CL
+	NVIC_InitStructure.NVIC_IRQChannel = CAN1_RX0_IRQn;
+#else
+	NVIC_InitStructure.NVIC_IRQChannel = USB_LP_CAN1_RX0_IRQn;
+#endif
+	NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 1;
+	NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0;
+	NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
+	NVIC_Init(&NVIC_InitStructure);
 }
 
 int MyCAN_Transmit(uint32_t ID, uint8_t Length, uint8_t *Data)
@@ -120,7 +190,7 @@ int MyCAN_Transmit(uint32_t ID, uint8_t Length, uint8_t *Data)
 
 uint8_t MyCAN_ReceiveFlag(void)
 {
-	if (CAN_MessagePending(CAN1, CAN_FIFO0) > 0)
+	if (s_rx_head != s_rx_tail)
 	{
 		return 1;
 	}
@@ -129,30 +199,51 @@ uint8_t MyCAN_ReceiveFlag(void)
 
 void MyCAN_Receive(uint32_t *ID, uint8_t *Length, uint8_t *Data)
 {
+	uint8_t tail = s_rx_tail;
+	uint8_t len = 0U;
+
+	if (ID == 0 || Length == 0 || Data == 0)
+	{
+		return;
+	}
+
+	if (tail == s_rx_head)
+	{
+		*Length = 0U;
+		return;
+	}
+
+	*ID = s_rx_queue[tail].id;
+	len = s_rx_queue[tail].len;
+	*Length = len;
+	for (uint8_t i = 0; i < len; i++)
+	{
+		Data[i] = s_rx_queue[tail].data[i];
+	}
+	for (uint8_t i = len; i < 8U; i++)
+	{
+		Data[i] = 0U;
+	}
+
+	s_rx_tail = prvRxNextIndex(tail);
+}
+
+void MyCAN_IRQHandler(void)
+{
 	CanRxMsg RxMessage;
-	CAN_Receive(CAN1, CAN_FIFO0, &RxMessage);
-	
-	if (RxMessage.IDE == CAN_Id_Standard)
+
+	if (CAN_GetITStatus(CAN1, CAN_IT_FMP0) == RESET)
 	{
-		*ID = RxMessage.StdId;
+		return;
 	}
-	else
+
+	while (CAN_MessagePending(CAN1, CAN_FIFO0) > 0U)
 	{
-		*ID = RxMessage.ExtId;
+		CAN_Receive(CAN1, CAN_FIFO0, &RxMessage);
+		prvQueueRxMessage(&RxMessage);
 	}
-	
-	if (RxMessage.RTR == CAN_RTR_Data)
-	{
-		*Length = RxMessage.DLC;
-		for (uint8_t i = 0; i < *Length; i ++)
-		{
-			Data[i] = RxMessage.Data[i];
-		}
-	}
-	else
-	{
-		*Length = 0;
-	}
+
+	CAN_ClearITPendingBit(CAN1, CAN_IT_FMP0);
 }
 
 void MyCAN_GetDiag(MyCanDiag *diag)
@@ -167,5 +258,7 @@ void MyCAN_GetDiag(MyCanDiag *diag)
 	diag->rec = s_last_rec;
 	diag->lec = s_last_lec;
 	diag->tx_fail_count = s_tx_fail_count;
+	diag->rx_irq_count = s_rx_irq_count;
+	diag->rx_drop_count = s_rx_drop_count;
 	diag->last_tx_status = s_last_tx_status;
 }

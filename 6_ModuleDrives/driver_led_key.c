@@ -90,7 +90,7 @@ int Driver_Key_Read(uint8_t *buf, uint16_t len)
 		return -1;
 	}
 
-	if(Driver_Buffer_ReadBytes(&KeyBuffer, buf, len))
+	if(Driver_Buffer_ReadBytes(&KeyBuffer, buf, len) == (int)len)
 	{
 		/* 读取成功。 */
 		return 0;

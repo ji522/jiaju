@@ -80,9 +80,15 @@ void TimerInit(Timer* timer)
 
 int FreeRTOS_read(Network* n, unsigned char* buffer, int len, int timeout_ms)
 {
-	if(n->netdev->Read(n->netdev, (char*)buffer, len, timeout_ms) == 0)
+	int rc = n->netdev->Read(n->netdev, (char*)buffer, len, timeout_ms);
+
+	if(rc == 0)
 	{
 		return len;
+	}
+	if(rc < 0)
+	{
+		return -1;
 	}
 
 	return 0;

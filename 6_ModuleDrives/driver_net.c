@@ -11,8 +11,12 @@
 #include "stdio.h"
 
 static void HAL_UART2_MspInit(UART_HandleTypeDef *huart);
-/* 閫愬瓧鑺傝В鏋?ESP8266 鍥炲寘涓殑 +IPD 鏁版嵁甯с€?*/
-void NetDataProcess_Callback(uint8_t data);
+static void Driver_Net_AppendReplyByte(char *buf,
+	uint16_t capacity,
+	uint16_t *length,
+	uint8_t data);
+/* Parse ESP8266 +IPD frames. Returns 1 for TCP payload bytes. */
+static uint8_t NetDataProcess_Callback(uint8_t data);
 
 /*
  * USART2 must stay within the FreeRTOS "syscall-safe" priority range because
@@ -31,6 +35,9 @@ static RingBuffer NetDataBuffer;
 static TaskHandle_t xNetWaitTaskHandle = NULL;
 /* Initialize the modem only once; later reconnects should reuse the live link. */
 static uint8_t g_net_driver_inited = 0U;
+static volatile uint32_t s_net_payload_drop_count = 0U;
+static volatile uint8_t s_net_rx_fault_pending = 0U;
+static volatile uint8_t s_net_parser_reset_requested = 0U;
 
 static void Driver_Net_RegisterCurrentTask(void)
 {
@@ -93,7 +100,9 @@ static void Driver_Net_WaitForRxActivity(uint32_t timeout_ms)
 static int Driver_Net_WaitForReply(const char *reply, uint16_t timeout)
 {
 	/* 鍦?AT 搴旂瓟缂撳啿鍖轰腑杞鍖归厤鐩爣鍏抽敭瀛椼€?*/
-	uint8_t i = 0;
+	uint8_t data = 0U;
+	uint16_t length = 0U;
+	uint32_t start_tick = 0U;
 	char buf[128] = {0};
 
 	if(reply == NULL || timeout == 0)
@@ -102,12 +111,13 @@ static int Driver_Net_WaitForReply(const char *reply, uint16_t timeout)
 	}
 
 	Driver_Net_ClearWaitNotification();
+	start_tick = HAL_GetTick();
 
-	while(timeout != 0)
+	while((uint32_t)(HAL_GetTick() - start_tick) < timeout)
 	{
-		if(Driver_Buffer_Read(&CMDRetBuffer, (uint8_t*)&buf[i]) == 0)
+		if(Driver_Buffer_Read(&CMDRetBuffer, &data) == 0)
 		{
-			i = (i + 1) % sizeof(buf);
+			Driver_Net_AppendReplyByte(buf, sizeof(buf), &length, data);
 			if(strstr(buf, reply) != 0)
 			{
 				/* 鎵惧埌鐩爣搴旂瓟銆?*/
@@ -116,43 +126,6 @@ static int Driver_Net_WaitForReply(const char *reply, uint16_t timeout)
 		}
 		else
 		{
-			timeout--;
-			Driver_Net_WaitForRxActivity(1);
-		}
-	}
-
-	return -1;
-}
-
-static int Driver_Net_WaitForAnyReply(const char *const replies[], uint8_t reply_count, uint16_t timeout)
-{
-	uint8_t i = 0;
-	uint8_t r = 0;
-	char buf[128] = {0};
-
-	if(replies == NULL || reply_count == 0 || timeout == 0)
-	{
-		return -1;
-	}
-
-	Driver_Net_ClearWaitNotification();
-
-	while(timeout != 0)
-	{
-		if(Driver_Buffer_Read(&CMDRetBuffer, (uint8_t*)&buf[i]) == 0)
-		{
-			i = (i + 1) % sizeof(buf);
-			for(r = 0; r < reply_count; r++)
-			{
-				if(replies[r] != NULL && strstr(buf, replies[r]) != 0)
-				{
-					return 0;
-				}
-			}
-		}
-		else
-		{
-			timeout--;
 			Driver_Net_WaitForRxActivity(1);
 		}
 	}
@@ -175,17 +148,20 @@ static int Driver_Net_WaitForTcpConnect(uint16_t timeout)
 		"DNS Fail",
 		"no ip"
 	};
-	uint8_t i = 0;
+	uint8_t data = 0U;
 	uint8_t r = 0;
+	uint16_t length = 0U;
+	uint32_t start_tick = 0U;
 	char buf[192] = {0};
 
 	Driver_Net_ClearWaitNotification();
+	start_tick = HAL_GetTick();
 
-	while(timeout != 0)
+	while((uint32_t)(HAL_GetTick() - start_tick) < timeout)
 	{
-		if(Driver_Buffer_Read(&CMDRetBuffer, (uint8_t*)&buf[i]) == 0)
+		if(Driver_Buffer_Read(&CMDRetBuffer, &data) == 0)
 		{
-			i = (i + 1) % sizeof(buf);
+			Driver_Net_AppendReplyByte(buf, sizeof(buf), &length, data);
 
 			for(r = 0; r < (sizeof(xSuccessReplies) / sizeof(xSuccessReplies[0])); r++)
 			{
@@ -206,7 +182,6 @@ static int Driver_Net_WaitForTcpConnect(uint16_t timeout)
 		}
 		else
 		{
-			timeout--;
 			Driver_Net_WaitForRxActivity(1);
 		}
 	}
@@ -226,17 +201,20 @@ static int Driver_Net_WaitForWiFiJoin(uint16_t timeout)
 		"FAIL",
 		"ERROR"
 	};
-	uint8_t i = 0;
+	uint8_t data = 0U;
 	uint8_t r = 0;
+	uint16_t length = 0U;
+	uint32_t start_tick = 0U;
 	char buf[192] = {0};
 
 	Driver_Net_ClearWaitNotification();
+	start_tick = HAL_GetTick();
 
-	while(timeout != 0)
+	while((uint32_t)(HAL_GetTick() - start_tick) < timeout)
 	{
-		if(Driver_Buffer_Read(&CMDRetBuffer, (uint8_t*)&buf[i]) == 0)
+		if(Driver_Buffer_Read(&CMDRetBuffer, &data) == 0)
 		{
-			i = (i + 1) % sizeof(buf);
+			Driver_Net_AppendReplyByte(buf, sizeof(buf), &length, data);
 
 			for(r = 0; r < (sizeof(xSuccessReplies) / sizeof(xSuccessReplies[0])); r++)
 			{
@@ -257,7 +235,6 @@ static int Driver_Net_WaitForWiFiJoin(uint16_t timeout)
 		}
 		else
 		{
-			timeout--;
 			Driver_Net_WaitForRxActivity(1);
 		}
 	}
@@ -268,19 +245,22 @@ static int Driver_Net_WaitForWiFiJoin(uint16_t timeout)
 
 static int Driver_Net_HasValidStaIp(uint16_t timeout)
 {
+	uint8_t data = 0U;
 	char buf[192] = {0};
-	uint8_t i = 0;
+	uint16_t length = 0U;
+	uint32_t start_tick = 0U;
 
 	Driver_Net_RegisterCurrentTask();
 	Driver_Buffer_Clean(&CMDRetBuffer);
 	HAL_UART_Transmit(&huart2, (uint8_t *)"AT+CIFSR\r\n", strlen("AT+CIFSR\r\n"), 500);
 	Driver_Net_ClearWaitNotification();
+	start_tick = HAL_GetTick();
 
-	while(timeout != 0)
+	while((uint32_t)(HAL_GetTick() - start_tick) < timeout)
 	{
-		if(Driver_Buffer_Read(&CMDRetBuffer, (uint8_t *)&buf[i]) == 0)
+		if(Driver_Buffer_Read(&CMDRetBuffer, &data) == 0)
 		{
-			i = (i + 1) % sizeof(buf);
+			Driver_Net_AppendReplyByte(buf, sizeof(buf), &length, data);
 			if(strstr(buf, "STAIP,\"0.0.0.0\"") != 0)
 			{
 				return -1;
@@ -292,7 +272,6 @@ static int Driver_Net_HasValidStaIp(uint16_t timeout)
 		}
 		else
 		{
-			timeout--;
 			Driver_Net_WaitForRxActivity(1);
 		}
 	}
@@ -353,6 +332,58 @@ static void HAL_UART2_MspInit(UART_HandleTypeDef *huart)
 		HAL_NVIC_SetPriority(USART2_IRQn, NET_UART_IRQ_PRIORITY, 0);
 		HAL_NVIC_EnableIRQ(USART2_IRQn);
 	}
+}
+
+static uint8_t Driver_Net_TakeRxFault(void)
+{
+	uint8_t pending = 0U;
+
+	taskENTER_CRITICAL();
+	pending = s_net_rx_fault_pending;
+	s_net_rx_fault_pending = 0U;
+	taskEXIT_CRITICAL();
+
+	return pending;
+}
+
+static void Driver_Net_ResetRxStream(void)
+{
+	taskENTER_CRITICAL();
+	(void)Driver_Buffer_Clean(&NetDataBuffer);
+	s_net_rx_fault_pending = 0U;
+	s_net_parser_reset_requested = 1U;
+	taskEXIT_CRITICAL();
+}
+
+static void Driver_Net_AppendReplyByte(char *buf,
+	uint16_t capacity,
+	uint16_t *length,
+	uint8_t data)
+{
+	uint16_t keep = 0U;
+
+	if(buf == NULL || length == NULL || capacity < 2U)
+	{
+		return;
+	}
+
+	if(data == 0U)
+	{
+		*length = 0U;
+		buf[0] = '\0';
+		return;
+	}
+
+	if(*length >= (uint16_t)(capacity - 1U))
+	{
+		keep = (uint16_t)((capacity - 1U) / 2U);
+		memmove(buf, &buf[*length - keep], keep);
+		*length = keep;
+	}
+
+	buf[*length] = (char)data;
+	(*length)++;
+	buf[*length] = '\0';
 }
 
 #if 0
@@ -416,26 +447,29 @@ void USART2_IRQHandler(void)
 {
 	/* 串口接收中断：保存 AT 流 + 解析 +IPD + 通知等待任务。 */
 	uint8_t rx_data = 0;
+	uint32_t status = USART2->SR;
 	BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
-	if(__HAL_UART_GET_FLAG(&huart2, UART_FLAG_RXNE) == SET)
+	if((status & (USART_SR_RXNE | USART_SR_ORE)) != 0U)
 	{
-		__HAL_UART_CLEAR_FLAG(&huart2, UART_FLAG_RXNE);
-
-		/* fix: F407 USART 在发生 ORE（溢出错误）后，单独读 DR 不能清除 ORE 标志，
-		 * 会导致中断反复触发卡死。需先检查并清除 ORE。 */
-		if(__HAL_UART_GET_FLAG(&huart2, UART_FLAG_ORE) == SET)
+		/* Reading SR followed by DR clears RXNE and ORE without consuming DR twice. */
+		rx_data = (uint8_t)(USART2->DR & 0xFFU);
+		if((status & USART_SR_ORE) != 0U)
 		{
-			__HAL_UART_CLEAR_OREFLAG(&huart2);
+			s_net_payload_drop_count++;
+			s_net_rx_fault_pending = 1U;
+			s_net_parser_reset_requested = 1U;
 		}
 
-		rx_data = (uint8_t)(USART2->DR & 0xFFU);
+		if((status & USART_SR_RXNE) != 0U)
+		{
+			/* Keep TCP payload out of the AT reply matcher. */
+			if(NetDataProcess_Callback(rx_data) == 0U)
+			{
+				(void)Driver_Buffer_Write(&CMDRetBuffer, rx_data);
+			}
 
-		/* Keep the raw modem reply stream for AT command matching. */
-		Driver_Buffer_Write(&CMDRetBuffer, rx_data);
-
-		/* Parse and extract pure TCP payload from +IPD frames. */
-		NetDataProcess_Callback(rx_data);
+		}
 
 		if(xNetWaitTaskHandle != NULL)
 		{
@@ -450,21 +484,35 @@ static int Driver_Net_TransmitCmd(const char *cmd, const char *reply, uint16_t t
 {
 	/* 鍙戦€?AT 鎸囦护锛屽苟绛夊緟鎸囧畾搴旂瓟瀛楃涓层€?*/
 	char buf[128] = {0};
+	int written = 0;
 	int ret = -1;
 
-	Driver_Net_RegisterCurrentTask();
-	strcat(buf, cmd);
-
-	if(strstr(buf, "\r\n") == NULL)
+	if(cmd == NULL || reply == NULL || timeout == 0U)
 	{
-		strcat(buf, "\r\n");
+		return -1;
+	}
+
+	Driver_Net_RegisterCurrentTask();
+	if(strstr(cmd, "\r\n") == NULL)
+	{
+		written = snprintf(buf, sizeof(buf), "%s\r\n", cmd);
+	}
+	else
+	{
+		written = snprintf(buf, sizeof(buf), "%s", cmd);
+	}
+	if(written < 0 || written >= (int)sizeof(buf))
+	{
+		return -1;
 	}
 
 	Driver_Buffer_Clean(&CMDRetBuffer);
-	HAL_UART_Transmit(&huart2, (uint8_t *)buf, strlen(buf), 500);
+	if(HAL_UART_Transmit(&huart2, (uint8_t *)buf, strlen(buf), 500) != HAL_OK)
+	{
+		return -1;
+	}
 
 	ret = Driver_Net_WaitForReply(reply, timeout);
-	memset(buf, 0, sizeof(buf));
 	return ret;
 }
 
@@ -472,14 +520,27 @@ int Driver_Net_TransmitSocket(const char *socket, int len, int timeout)
 {
 	/* 涓ら樁娈靛彂閫侊細鍏?CIPSEND 鑾峰彇 '>'锛屽啀鍙戝疄闄呮暟鎹瓑寰?SEND OK銆?*/
 	char cmd[16] = {0};
+	int written = 0;
 	int ret = -1;
+
+	if(socket == NULL || len <= 0 || len > 0xFFFF || timeout <= 0)
+	{
+		return -1;
+	}
 
 	Driver_Net_RegisterCurrentTask();
 
 	/* Stage 1: request the ESP8266 transmit prompt ('>'). */
-	sprintf(cmd, "AT+CIPSEND=%d\r\n", len);
+	written = snprintf(cmd, sizeof(cmd), "AT+CIPSEND=%d\r\n", len);
+	if(written < 0 || written >= (int)sizeof(cmd))
+	{
+		return -1;
+	}
 	Driver_Buffer_Clean(&CMDRetBuffer);
-	HAL_UART_Transmit(&huart2, (uint8_t *)cmd, strlen(cmd), 500);
+	if(HAL_UART_Transmit(&huart2, (uint8_t *)cmd, strlen(cmd), 500) != HAL_OK)
+	{
+		return -1;
+	}
 
 	if(Driver_Net_WaitForReply(">", timeout) != 0)
 	{
@@ -488,7 +549,10 @@ int Driver_Net_TransmitSocket(const char *socket, int len, int timeout)
 
 	/* Stage 2: push the actual payload and wait for SEND OK. */
 	Driver_Buffer_Clean(&CMDRetBuffer);
-	HAL_UART_Transmit(&huart2, (uint8_t *)socket, len, 500);
+	if(HAL_UART_Transmit(&huart2, (uint8_t *)socket, (uint16_t)len, 500) != HAL_OK)
+	{
+		return -1;
+	}
 
 	ret = Driver_Net_WaitForReply("SEND OK", timeout);
 	return ret;
@@ -497,36 +561,39 @@ int Driver_Net_TransmitSocket(const char *socket, int len, int timeout)
 int Driver_Net_RecvSocket(char *buf, int len, int timeout)
 {
 	/* 浠庣函鏁版嵁缂撳啿鍖烘寜鐩爣闀垮害璇诲彇锛岃秴鏃惰繑鍥炴湭瀹屾垚鐘舵€併€?*/
-	int recvLen = 0;
+	uint32_t start_tick = 0U;
 
-	if(buf == NULL || len <= 0)
+	if(buf == NULL || len <= 0 || len > 0xFFFF)
 	{
 		return -1;
+	}
+	if(timeout <= 0)
+	{
+		return 1;
 	}
 
 	Driver_Net_RegisterCurrentTask();
 	Driver_Net_ClearWaitNotification();
+	start_tick = HAL_GetTick();
 
-	while(timeout != 0 && recvLen < len)
+	while((uint32_t)(HAL_GetTick() - start_tick) < (uint32_t)timeout)
 	{
-		int onceReadLen = len - recvLen;
-		if(onceReadLen > 255)
+		if(Driver_Net_TakeRxFault() != 0U)
 		{
-			onceReadLen = 255;
+			(void)Driver_Buffer_Clean(&NetDataBuffer);
+			return -1;
 		}
 
-		onceReadLen = Driver_Buffer_ReadBytes(&NetDataBuffer, (uint8_t*)&buf[recvLen], (uint8_t)onceReadLen);
-		if(onceReadLen > 0)
+		if(Driver_Buffer_GetUsed(&NetDataBuffer) >= (uint16_t)len)
 		{
-			recvLen += onceReadLen;
-			continue;
+			return (Driver_Buffer_ReadBytes(&NetDataBuffer,
+				(uint8_t *)buf, (uint16_t)len) == len) ? 0 : -1;
 		}
 
-		timeout--;
 		Driver_Net_WaitForRxActivity(1);
 	}
 
-	return (recvLen == len) ? 0 : 1;
+	return 1;
 }
 
 int Driver_Net_ConnectWiFi(const char *ssid, const char *pwd, int timeout)
@@ -534,14 +601,27 @@ int Driver_Net_ConnectWiFi(const char *ssid, const char *pwd, int timeout)
 	/* fix: buf 从 64 扩大到 128，SSID(最镳32B)+密码(最镳64B)+固定字符 > 64，
 	 * 原来指针源头 buf[64] 会栈溢出，改用 snprintf 拼字符串。 */
 	char buf[128];
+	int written = 0;
+
+	if(ssid == NULL || pwd == NULL || timeout <= 0)
+	{
+		return -1;
+	}
 
 	Driver_Net_RegisterCurrentTask();
 
-	snprintf(buf, sizeof(buf), "AT+CWJAP=\"%s\",\"%s\"\r\n", ssid, pwd);
+	written = snprintf(buf, sizeof(buf), "AT+CWJAP=\"%s\",\"%s\"\r\n", ssid, pwd);
+	if(written < 0 || written >= (int)sizeof(buf))
+	{
+		return -1;
+	}
 
 	printf("[NET] Joining WiFi: %s\r\n", ssid);
 	Driver_Buffer_Clean(&CMDRetBuffer);
-	HAL_UART_Transmit(&huart2, (uint8_t *)buf, strlen(buf), 500);
+	if(HAL_UART_Transmit(&huart2, (uint8_t *)buf, strlen(buf), 500) != HAL_OK)
+	{
+		return -1;
+	}
 
 	if(Driver_Net_WaitForWiFiJoin(timeout) == 0)
 	{
@@ -567,7 +647,14 @@ int Driver_Net_DisconnectWiFi(void)
 int Driver_Net_ConnectTCP(const char *ip, int port, int timeout)
 {
 	/* 鍏堥厤缃崟杩炴帴涓庢櫘閫氫紶杈撴ā寮忥紝鍐嶅彂璧?TCP 杩炴帴銆?*/
-	char buf[128] = "AT+CIPSTART=\"TCP\",\"";
+	char buf[128] = {0};
+	int written = 0;
+	int ret = -1;
+
+	if(ip == NULL || port <= 0 || port > 65535 || timeout <= 0)
+	{
+		return -1;
+	}
 
 	if(Driver_Net_TransmitCmd("AT+CIPMUX=0", "OK\r\n", 500) != 0)
 	{
@@ -581,17 +668,24 @@ int Driver_Net_ConnectTCP(const char *ip, int port, int timeout)
 	}
 	Driver_Net_TaskDelay(1);
 
-	sprintf(&buf[19], "%s\",%d", ip, port);
+	written = snprintf(buf, sizeof(buf), "AT+CIPSTART=\"TCP\",\"%s\",%d\r\n", ip, port);
+	if(written < 0 || written >= (int)sizeof(buf))
+	{
+		return -1;
+	}
 	Driver_Net_RegisterCurrentTask();
 
-	if(strstr(buf, "\r\n") == NULL)
-	{
-		strcat(buf, "\r\n");
-	}
-
 	Driver_Buffer_Clean(&CMDRetBuffer);
-	HAL_UART_Transmit(&huart2, (uint8_t *)buf, strlen(buf), 500);
-	return Driver_Net_WaitForTcpConnect(timeout);
+	if(HAL_UART_Transmit(&huart2, (uint8_t *)buf, strlen(buf), 500) != HAL_OK)
+	{
+		return -1;
+	}
+	ret = Driver_Net_WaitForTcpConnect(timeout);
+	if(ret == 0)
+	{
+		Driver_Net_ResetRxStream();
+	}
+	return ret;
 }
 
 int Driver_Net_Disconnect_TCP_UDP(void)
@@ -603,90 +697,135 @@ typedef enum AT_STATUS{
 	/* 瑙ｆ瀽 +IPD 鐨勭姸鎬佹満锛氬抚澶?-> 闀垮害 -> 鏁版嵁浣撱€?*/
 	INIT_STATUS,
 	LEN_STATUS,
-	DATA_STATUS
+	DATA_STATUS,
+	DISCARD_STATUS
 }AT_STATUS;
 
-static uint8_t g_DataBuff[256] = {0};
+static uint8_t g_DataBuff[512] = {0};
 
-void NetDataProcess_Callback(uint8_t data)
+static uint8_t NetDataProcess_Callback(uint8_t data)
 {
 	/* 浠庝覆鍙ｅ瓧鑺傛祦涓彁鍙?+IPD,<len>:<data> 閲岀殑 data 閮ㄥ垎銆?*/
-	uint8_t *buf = g_DataBuff;
+	static const char prefix[] = "+IPD,";
 	static AT_STATUS g_status = INIT_STATUS;
-	static int g_DataBuffIndex = 0;
-	static int g_DataLen = 0;
-	int i = g_DataBuffIndex;
-	int m = 0;
+	static uint8_t prefix_index = 0U;
+	static uint8_t length_digits = 0U;
+	static uint32_t data_index = 0U;
+	static uint32_t data_len = 0U;
 
-	buf[i] = data;
-	g_DataBuffIndex++;
+	if(s_net_parser_reset_requested != 0U)
+	{
+		g_status = INIT_STATUS;
+		prefix_index = 0U;
+		length_digits = 0U;
+		data_index = 0U;
+		data_len = 0U;
+		s_net_parser_reset_requested = 0U;
+	}
 
 	switch(g_status)
 	{
 		case INIT_STATUS:
 		{
-			/* Find the "+IPD," frame prefix in the incoming byte stream. */
-			if(buf[0] != '+')
+			if(data == (uint8_t)prefix[prefix_index])
 			{
-				g_DataBuffIndex = 0;
-			}
-			else if(i == 4)
-			{
-				if(strncmp((char*)buf, "+IPD,", 5) == 0)
+				prefix_index++;
+				if(prefix_index == (sizeof(prefix) - 1U))
 				{
+					prefix_index = 0U;
+					length_digits = 0U;
+					data_index = 0U;
+					data_len = 0U;
 					g_status = LEN_STATUS;
 				}
-				g_DataBuffIndex = 0;
 			}
-			break;
+			else
+			{
+				prefix_index = (data == (uint8_t)prefix[0]) ? 1U : 0U;
+			}
+			return 0U;
 		}
 
 		case LEN_STATUS:
 		{
-			/* Collect ASCII digits until ':' and convert them to payload length. */
-			if(buf[i] == ':')
+			if(data >= (uint8_t)'0' && data <= (uint8_t)'9' && length_digits < 5U)
 			{
-				for(m = 0; m < i; m++)
-				{
-					g_DataLen = g_DataLen * 10 + buf[m] - '0';
-				}
+				data_len = (data_len * 10U) + (uint32_t)(data - (uint8_t)'0');
+				length_digits++;
+				return 0U;
+			}
 
-				g_status = DATA_STATUS;
-				g_DataBuffIndex = 0;
-			}
-			else if(i >= 9)
+			if(data == (uint8_t)':' && length_digits != 0U && data_len != 0U)
 			{
-				/* Reset the parser if the frame is malformed. */
-				g_status = INIT_STATUS;
-				g_DataBuffIndex = 0;
+				data_index = 0U;
+				if(data_len <= sizeof(g_DataBuff))
+				{
+					g_status = DATA_STATUS;
+				}
+				else
+				{
+					g_status = DISCARD_STATUS;
+					s_net_payload_drop_count++;
+				}
+				return 0U;
 			}
-			break;
+
+			g_status = INIT_STATUS;
+			prefix_index = (data == (uint8_t)prefix[0]) ? 1U : 0U;
+			length_digits = 0U;
+			data_index = 0U;
+			data_len = 0U;
+			return 0U;
 		}
 
 		case DATA_STATUS:
 		{
-			/* fix: 加越界守卫，防止 g_DataLen 异常大或已占满 g_DataBuff 时数组越界。 */
-			if(g_DataBuffIndex >= (int)sizeof(g_DataBuff))
+			/* The length gate above keeps this write within g_DataBuff. */
+			g_DataBuff[data_index] = data;
+			data_index++;
+			if(data_index == data_len)
+			{
+				if(Driver_Buffer_WriteBytes(&NetDataBuffer,
+					g_DataBuff, (uint16_t)data_len) != (int)data_len)
+				{
+					s_net_payload_drop_count++;
+					s_net_rx_fault_pending = 1U;
+				}
+				g_status = INIT_STATUS;
+				length_digits = 0U;
+				data_index = 0U;
+				data_len = 0U;
+			}
+			return 1U;
+		}
+
+		case DISCARD_STATUS:
+		{
+			data_index++;
+			if(data_index >= data_len)
 			{
 				g_status = INIT_STATUS;
-				g_DataBuffIndex = 0;
-				g_DataLen = 0;
-				break;
+				length_digits = 0U;
+				data_index = 0U;
+				data_len = 0U;
+				s_net_rx_fault_pending = 1U;
 			}
-			/* Once the declared number of bytes is received, push payload only. */
-			if(g_DataBuffIndex == g_DataLen)
-			{
-				Driver_Buffer_WriteBytes(&NetDataBuffer, buf, g_DataLen);
-				g_status = INIT_STATUS;
-				g_DataBuffIndex = 0;
-				g_DataLen = 0;
-			}
-			break;
+			return 1U;
 		}
 
 		default:
-			break;
+			g_status = INIT_STATUS;
+			prefix_index = 0U;
+			length_digits = 0U;
+			data_index = 0U;
+			data_len = 0U;
+			return 0U;
 	}
+}
+
+uint32_t Driver_Net_GetRxDropCount(void)
+{
+	return s_net_payload_drop_count;
 }
 
 int Driver_Net_Init(void)

@@ -42,7 +42,7 @@ int Driver_Buffer_Write(ptRingBuffer buffer, const uint8_t data);
  * @param len 将被写入的字节长度
  * @return 实际成功写入的字节数，如果缓冲区没空间了就会比要求的 len 少
  */
-int Driver_Buffer_WriteBytes(ptRingBuffer buffer, const uint8_t *data_stream, uint8_t len);
+int Driver_Buffer_WriteBytes(ptRingBuffer buffer, const uint8_t *data_stream, uint16_t len);
 
 /**
  * @brief 从缓冲区抓取最早的一个字节数据 (先进先出)
@@ -59,7 +59,17 @@ int Driver_Buffer_Read(ptRingBuffer buffer, uint8_t *data);
  * @param len 打算抓取的数据量
  * @return 真实连续获取到的字节数
  */
-int Driver_Buffer_ReadBytes(ptRingBuffer buffer, uint8_t *data_stream, uint8_t len);
+int Driver_Buffer_ReadBytes(ptRingBuffer buffer, uint8_t *data_stream, uint16_t len);
+
+/**
+ * @brief Return the number of bytes currently available for reading.
+ */
+uint16_t Driver_Buffer_GetUsed(const ptRingBuffer buffer);
+
+/**
+ * @brief Return the number of bytes that can be written without overwriting data.
+ */
+uint16_t Driver_Buffer_GetFree(const ptRingBuffer buffer);
 
 /**
  * @brief 暴力清空重置该缓冲区

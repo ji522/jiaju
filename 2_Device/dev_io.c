@@ -59,6 +59,11 @@ static IODev g_tIODevs[3] = {{LED, IODev_Init, IODev_Write, IODev_Read},\
  */
 ptIODev IODev_GetDev(IODevType type)
 {
+	if((unsigned int)type >= (sizeof(g_tIODevs) / sizeof(g_tIODevs[0])))
+	{
+		return NULL;
+	}
+
 	/* 通过枚举作为索引，直接返回装载好的局部全局变量数组中的元素地址 */
 	return &g_tIODevs[type];
 }

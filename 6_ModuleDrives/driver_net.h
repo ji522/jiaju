@@ -34,6 +34,11 @@ int Driver_Net_TransmitSocket(const char *socket, int len, int timeout);
 int Driver_Net_RecvSocket(char *buf, int len, int timeout);
 
 /**
+ * @brief Return the number of UART stream faults or +IPD payload drops since boot.
+ */
+uint32_t Driver_Net_GetRxDropCount(void);
+
+/**
  * @brief 控制 ESP8266 发送 AT 指令去连接指定的 WiFi 热点
  * @param ssid 热点名称
  * @param pwd 热点密码

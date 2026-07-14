@@ -6,7 +6,6 @@
 
 #include "driver_buffer.h"
 #include "stdlib.h"
-#include "string.h"
 #include "stdio.h"
 
 /**
@@ -72,21 +71,26 @@ int Driver_Buffer_Write(ptRingBuffer buffer, const uint8_t data)
  * @param len 被写总数据量
  * @return 真实成功写入缓冲区的字节数
  */
-int Driver_Buffer_WriteBytes(ptRingBuffer buffer, const uint8_t *data_stream, uint8_t len)
+int Driver_Buffer_WriteBytes(ptRingBuffer buffer, const uint8_t *data_stream, uint16_t len)
 {
-	int i = 0;
+	uint16_t i = 0;
+	uint16_t write_pos = 0U;
 	/* 防御性判空 */
 	if(buffer == NULL || buffer->fifo == NULL)	return -1;
 	if(data_stream == NULL)	return -1;
 	if(len == 0)	return -1;
+	if(Driver_Buffer_GetFree(buffer) < len)	return 0;
 
-	/* 逐个字节搬运，只要任一次写入报满(非0)，马上中断跳出 */
+	write_pos = buffer->pw;
+	/* Publish the new write pointer only after the complete packet is copied. */
 	for(i = 0; i <len; i++)
 	{
-		if(Driver_Buffer_Write(buffer, data_stream[i]) != 0) break;
+		buffer->fifo[write_pos] = data_stream[i];
+		write_pos = (uint16_t)((write_pos + 1U) % buffer->buf_size);
 	}
+	buffer->pw = write_pos;
 	
-	return i;
+	return (int)i;
 }
 
 /**
@@ -117,21 +121,56 @@ int Driver_Buffer_Read(ptRingBuffer buffer, uint8_t *data)
  * @param len 想取走的数据长度
  * @return 实际提取到了多少字节
  */
-int Driver_Buffer_ReadBytes(ptRingBuffer buffer, uint8_t *data_stream, uint8_t len)
+int Driver_Buffer_ReadBytes(ptRingBuffer buffer, uint8_t *data_stream, uint16_t len)
 {
-	int i = 0;
+	uint16_t i = 0;
+	uint16_t read_pos = 0U;
 	/* 判空防御 */
 	if(buffer == NULL || buffer->fifo == NULL)	return -1;
 	if(data_stream == NULL)	return -1;
 	if(len == 0)	return -1;
+	if(Driver_Buffer_GetUsed(buffer) < len)	return 0;
 	
-	/* 逐个提起，若哪次发现缓冲区空了(非0出错)，则立刻退出 */
+	read_pos = buffer->pr;
+	/* Release the consumed space only after the complete packet is copied. */
 	for(i = 0; i <len; i++)
 	{
-		if(Driver_Buffer_Read(buffer, &data_stream[i]) != 0) break;
+		data_stream[i] = buffer->fifo[read_pos];
+		read_pos = (uint16_t)((read_pos + 1U) % buffer->buf_size);
 	}
+	buffer->pr = read_pos;
 	
-	return i;
+	return (int)i;
+}
+
+uint16_t Driver_Buffer_GetUsed(const ptRingBuffer buffer)
+{
+	uint16_t read_pos = 0U;
+	uint16_t write_pos = 0U;
+
+	if(buffer == NULL || buffer->fifo == NULL || buffer->buf_size == 0U)
+	{
+		return 0U;
+	}
+
+	read_pos = buffer->pr;
+	write_pos = buffer->pw;
+	if(write_pos >= read_pos)
+	{
+		return (uint16_t)(write_pos - read_pos);
+	}
+
+	return (uint16_t)(buffer->buf_size - read_pos + write_pos);
+}
+
+uint16_t Driver_Buffer_GetFree(const ptRingBuffer buffer)
+{
+	if(buffer == NULL || buffer->fifo == NULL || buffer->buf_size == 0U)
+	{
+		return 0U;
+	}
+
+	return (uint16_t)(buffer->buf_size - Driver_Buffer_GetUsed(buffer) - 1U);
 }
 
 /**
@@ -142,9 +181,8 @@ int Driver_Buffer_ReadBytes(ptRingBuffer buffer, uint8_t *data_stream, uint8_t l
 int Driver_Buffer_Clean(ptRingBuffer buffer)
 {
 	if(buffer == NULL || buffer->fifo == NULL)	return -1;
-	/* 实际内存空间灌零 */
-	memset(buffer->fifo, 0, buffer->buf_size);
-	/* 逻辑结构指针复位，假装清空一切 */
-	buffer->pw = buffer->pr = 0;
+	/* Advancing only the consumer pointer is race-safe for the ISR/task SPSC
+	 * buffers. Bytes arriving after this snapshot remain available. */
+	buffer->pr = buffer->pw;
 	return 0;
 }

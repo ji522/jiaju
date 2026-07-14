@@ -17,6 +17,7 @@
 #include "dev_io.h"
 #include "cJSON.h"
 #include "driver_can.h"
+#include "driver_net.h"
 
 extern void CAN_RequestClearDiagnostics(void);
 extern TaskHandle_t ledTaskHandle;
@@ -56,7 +57,7 @@ extern volatile uint32_t g_mqtt_reconn_count;
 extern void CAN_RecordCommandQueueDrop(void);
 
 /* ========== MQTT 服务器参数 ========== */
-const static char clientID[] = "STM32_SmartHome_F407";
+static char clientID[24] = "STM32_BCM_F407";
 const static char username[] = "";
 const static char password[] = "";
 
@@ -81,6 +82,21 @@ typedef enum {
 
 extern volatile ReconnState g_mqtt_state;
 
+static void prvInitClientId(void)
+{
+	uint32_t uid_high = HAL_GetUIDw0() ^ HAL_GetUIDw2();
+	uint32_t uid_low = HAL_GetUIDw1();
+	int written = snprintf(clientID, sizeof(clientID),
+		"BCM_%08lX%08lX",
+		(unsigned long)uid_high,
+		(unsigned long)uid_low);
+
+	if(written < 0 || written >= (int)sizeof(clientID))
+	{
+		(void)snprintf(clientID, sizeof(clientID), "STM32_BCM_F407");
+	}
+}
+
 static int prvPublishText(MQTTClient *client, const char *topic, const char *payload)
 {
 	MQTTMessage message;
@@ -91,6 +107,7 @@ static int prvPublishText(MQTTClient *client, const char *topic, const char *pay
 		return -1;
 	}
 
+	memset(&message, 0, sizeof(message));
 	message.qos = QOS0;
 	message.retained = 0;
 	message.payload = (void *)payload;
@@ -104,13 +121,13 @@ static int prvPublishText(MQTTClient *client, const char *topic, const char *pay
 	return rc;
 }
 
-static void prvPublishCanFrame(MQTTClient *client, const CanFrame *frame)
+static int prvPublishCanFrame(MQTTClient *client, const CanFrame *frame)
 {
 	char payload[192];
 
 	if(client == NULL || frame == NULL)
 	{
-		return;
+		return -1;
 	}
 
 	if(frame->id == CAN_ID_BODY_STATUS && frame->dlc >= 2U)
@@ -138,7 +155,7 @@ static void prvPublishCanFrame(MQTTClient *client, const CanFrame *frame)
 			(unsigned)frame->data[4], (unsigned)frame->data[5],
 			(unsigned)frame->data[6], (unsigned)frame->data[7]);
 	}
-	prvPublishText(client, BcmStatusTopic, payload);
+	return prvPublishText(client, BcmStatusTopic, payload);
 }
 
 static int prvPublishGatewayStatus(MQTTClient *client)
@@ -198,7 +215,7 @@ static int prvPublishGatewayStatus(MQTTClient *client)
 		"\"can_error\":%lu,\"can_esr\":%lu,"
 		"\"seq_match\":%lu,\"seq_mismatch\":%lu,"
 		"\"slave_timeout\":%lu,\"cmd_drop\":%lu,\"isr_drop\":%lu,"
-		"\"uplink_drop\":%lu,\"mqtt_reconn\":%lu}",
+		"\"uplink_drop\":%lu,\"net_rx_drop\":%lu,\"mqtt_reconn\":%lu}",
 		(unsigned long)g_can_tx_count,
 		(unsigned long)g_can_rx_count,
 		(unsigned long)g_can_last_rx_id,
@@ -212,6 +229,7 @@ static int prvPublishGatewayStatus(MQTTClient *client)
 		(unsigned long)g_can_cmd_drop_count,
 		(unsigned long)g_can_isr_drop_count,
 		(unsigned long)g_can_uplink_drop_count,
+		(unsigned long)Driver_Net_GetRxDropCount(),
 		(unsigned long)g_mqtt_reconn_count);
 	if(written < 0 || written >= (int)sizeof(payload))
 	{
@@ -222,16 +240,21 @@ static int prvPublishGatewayStatus(MQTTClient *client)
 	return prvPublishText(client, BcmStatusTopic, payload);
 }
 
-static void prvPublishGatewayStatusSnapshot(MQTTClient *client)
+static int prvPublishGatewayStatusSnapshot(MQTTClient *client)
 {
+	int rc = -1;
+
 	taskENTER_CRITICAL();
 	g_can_status_dirty = 0U;
 	taskEXIT_CRITICAL();
 
-	if(prvPublishGatewayStatus(client) != 0)
+	rc = prvPublishGatewayStatus(client);
+	if(rc != 0)
 	{
 		g_can_status_dirty = 1U;
 	}
+
+	return rc;
 }
 
 static int prvTopicEquals(const MQTTString *topic, const char *literal)
@@ -242,6 +265,12 @@ static int prvTopicEquals(const MQTTString *topic, const char *literal)
 		topic->lenstring.data != NULL &&
 		topic->lenstring.len == (int)literal_len &&
 		memcmp(topic->lenstring.data, literal, literal_len) == 0;
+}
+
+static int prvIsBcmCommandTopic(const MQTTString *topic)
+{
+	return prvTopicEquals(topic, BcmCmdTopic) ||
+		prvTopicEquals(topic, LegacyVehicleCmdTopic);
 }
 
 static int prvPayloadEquals(const MQTTMessage *message, const char *literal)
@@ -264,11 +293,17 @@ volatile ReconnState g_mqtt_state = RECONN_INIT;
 void messageArrived(MessageData* data)
 {
 	char buf[128];
-	int plen;
+	size_t plen = 0U;
 
-	printf("Message arrived on topic %.*s: %.*s\n",
+	if(data == NULL || data->topicName == NULL || data->message == NULL ||
+		data->topicName->lenstring.data == NULL || data->message->payload == NULL)
+	{
+		return;
+	}
+
+	printf("Message arrived on topic %.*s: %.*s\r\n",
 		data->topicName->lenstring.len, data->topicName->lenstring.data,
-		data->message->payloadlen, (char*)data->message->payload);
+		(int)data->message->payloadlen, (char*)data->message->payload);
 
 	if(!(prvTopicEquals(data->topicName, LedTopic) ||
 		prvTopicEquals(data->topicName, BcmCmdTopic) ||
@@ -276,7 +311,7 @@ void messageArrived(MessageData* data)
 		return;
 
 	plen = data->message->payloadlen;
-	if(plen <= 0 || plen >= (int)sizeof(buf) || data->message->payload == NULL)
+	if(plen == 0U || plen >= sizeof(buf) || data->message->payload == NULL)
 		return;
 
 	memcpy(buf, data->message->payload, plen);
@@ -296,9 +331,9 @@ void messageArrived(MessageData* data)
 					if(cJSON_IsString(action) && action->valuestring != NULL)
 					{
 						printf("[MQTT] LED cmd parsed: action=%s\r\n", action->valuestring);
-						if(strcmp(action->valuestring, "on") == 0)
+						if(ledTaskHandle != NULL && strcmp(action->valuestring, "on") == 0)
 							xTaskNotify(ledTaskHandle, 1, eSetValueWithOverwrite);
-						else if(strcmp(action->valuestring, "off") == 0)
+						else if(ledTaskHandle != NULL && strcmp(action->valuestring, "off") == 0)
 							xTaskNotify(ledTaskHandle, 0, eSetValueWithOverwrite);
 					}
 				}
@@ -310,72 +345,92 @@ void messageArrived(MessageData* data)
 			else if(strcmp(cmd->valuestring, "body_ctrl") == 0 ||
 				strcmp(cmd->valuestring, "bcm_ctrl") == 0)
 			{
-				CanFrame frame = {0};
-				cJSON *lamp = cJSON_GetObjectItem(root, "lamp");
-				cJSON *hazard = cJSON_GetObjectItem(root, "hazard");
-				cJSON *fan = cJSON_GetObjectItem(root, "fan");
-				cJSON *seq = cJSON_GetObjectItem(root, "seq");
-
-				frame.id = CAN_ID_BODY_CMD;
-				frame.dlc = 2;
-				frame.data[CAN_BODY_CMD_BYTE_MASK] = 0;
-				if(cJSON_IsNumber(seq) && seq->valueint >= 0 && seq->valueint <= 255)
+				if(!prvIsBcmCommandTopic(data->topicName))
 				{
-					frame.data[CAN_BODY_CMD_BYTE_SEQ] = (uint8_t)seq->valueint;
+					printf("[MQTT] Ignore BCM control on non-BCM topic\r\n");
 				}
 				else
 				{
-					frame.data[CAN_BODY_CMD_BYTE_SEQ] = s_next_cmd_seq++;
-					if(s_next_cmd_seq == 0U)
+					CanFrame frame = {0};
+					cJSON *lamp = cJSON_GetObjectItem(root, "lamp");
+					cJSON *hazard = cJSON_GetObjectItem(root, "hazard");
+					cJSON *fan = cJSON_GetObjectItem(root, "fan");
+					cJSON *seq = cJSON_GetObjectItem(root, "seq");
+
+					if(!cJSON_IsBool(lamp) || !cJSON_IsBool(hazard) || !cJSON_IsBool(fan))
 					{
-						s_next_cmd_seq = 1U;
-					}
-				}
-
-				if(cJSON_IsBool(lamp) && cJSON_IsTrue(lamp))
-					frame.data[CAN_BODY_CMD_BYTE_MASK] |= CAN_BODY_CTRL_LAMP;
-				if(cJSON_IsBool(hazard) && cJSON_IsTrue(hazard))
-					frame.data[CAN_BODY_CMD_BYTE_MASK] |= CAN_BODY_CTRL_HAZARD;
-				if(cJSON_IsBool(fan) && cJSON_IsTrue(fan))
-					frame.data[CAN_BODY_CMD_BYTE_MASK] |= CAN_BODY_CTRL_FAN;
-
-				printf("[MQTT] body_ctrl parsed: lamp=%d hazard=%d fan=%d data0=0x%02X seq=%u\r\n",
-					cJSON_IsBool(lamp) ? cJSON_IsTrue(lamp) : -1,
-					cJSON_IsBool(hazard) ? cJSON_IsTrue(hazard) : -1,
-					cJSON_IsBool(fan) ? cJSON_IsTrue(fan) : -1,
-					(unsigned)frame.data[CAN_BODY_CMD_BYTE_MASK],
-					(unsigned)frame.data[CAN_BODY_CMD_BYTE_SEQ]);
-
-				if(xCanTxQueue != NULL)
-				{
-					if(xQueueSendToBack(xCanTxQueue, &frame, 0) != pdPASS)
-					{
-						CAN_RecordCommandQueueDrop();
-						printf("[MQTT] CAN TX queue full\r\n");
+						printf("[MQTT] Reject BCM control: lamp/hazard/fan must all be boolean\r\n");
 					}
 					else
 					{
-						printf("[MQTT] CAN TX queued: id=0x%03lX data0=0x%02X\r\n",
-							(unsigned long)frame.id,
-							(unsigned)frame.data[CAN_BODY_CMD_BYTE_MASK]);
+						frame.id = CAN_ID_BODY_CMD;
+						frame.dlc = 2;
+						frame.data[CAN_BODY_CMD_BYTE_MASK] = 0;
+						if(cJSON_IsNumber(seq) && seq->valueint >= 0 && seq->valueint <= 255)
+						{
+							frame.data[CAN_BODY_CMD_BYTE_SEQ] = (uint8_t)seq->valueint;
+						}
+						else
+						{
+							frame.data[CAN_BODY_CMD_BYTE_SEQ] = s_next_cmd_seq++;
+							if(s_next_cmd_seq == 0U)
+							{
+								s_next_cmd_seq = 1U;
+							}
+						}
+
+						if(cJSON_IsTrue(lamp))
+							frame.data[CAN_BODY_CMD_BYTE_MASK] |= CAN_BODY_CTRL_LAMP;
+						if(cJSON_IsTrue(hazard))
+							frame.data[CAN_BODY_CMD_BYTE_MASK] |= CAN_BODY_CTRL_HAZARD;
+						if(cJSON_IsTrue(fan))
+							frame.data[CAN_BODY_CMD_BYTE_MASK] |= CAN_BODY_CTRL_FAN;
+
+						printf("[MQTT] body_ctrl parsed: lamp=%d hazard=%d fan=%d data0=0x%02X seq=%u\r\n",
+							cJSON_IsTrue(lamp), cJSON_IsTrue(hazard), cJSON_IsTrue(fan),
+							(unsigned)frame.data[CAN_BODY_CMD_BYTE_MASK],
+							(unsigned)frame.data[CAN_BODY_CMD_BYTE_SEQ]);
+
+						if(xCanTxQueue != NULL)
+						{
+							if(xQueueSendToBack(xCanTxQueue, &frame, 0) != pdPASS)
+							{
+								CAN_RecordCommandQueueDrop();
+								printf("[MQTT] CAN TX queue full\r\n");
+							}
+							else
+							{
+								printf("[MQTT] CAN TX queued: id=0x%03lX data0=0x%02X\r\n",
+									(unsigned long)frame.id,
+									(unsigned)frame.data[CAN_BODY_CMD_BYTE_MASK]);
+							}
+						}
+						else
+						{
+							CAN_RecordCommandQueueDrop();
+							printf("[MQTT] xCanTxQueue is NULL\r\n");
+						}
 					}
-				}
-				else
-				{
-					printf("[MQTT] xCanTxQueue is NULL\r\n");
 				}
 			}
 			else if(strcmp(cmd->valuestring, "get_status") == 0)
 			{
-				printf("[MQTT] get_status: uptime=%lu reconns=%lu state=%d\r\n",
-					(unsigned long)xTaskGetTickCount(),
-					(unsigned long)g_mqtt_reconn_count,
-					(int)g_mqtt_state);
+				if(prvIsBcmCommandTopic(data->topicName))
+				{
+					g_can_status_dirty = 1U;
+					printf("[MQTT] get_status requested: uptime=%lu reconns=%lu state=%d\r\n",
+						(unsigned long)xTaskGetTickCount(),
+						(unsigned long)g_mqtt_reconn_count,
+						(int)g_mqtt_state);
+				}
 			}
 			else if(strcmp(cmd->valuestring, "clear_dtc") == 0)
 			{
-				CAN_RequestClearDiagnostics();
-				printf("[MQTT] clear_dtc requested\r\n");
+				if(prvIsBcmCommandTopic(data->topicName))
+				{
+					CAN_RequestClearDiagnostics();
+					printf("[MQTT] clear_dtc requested\r\n");
+				}
 			}
 		}
 		cJSON_Delete(root);
@@ -383,9 +438,11 @@ void messageArrived(MessageData* data)
 	else
 	{
 		/* JSON 解析失败，回退到纯文本匹配（兼容旧版控制端） */
-		if(prvPayloadEquals(data->message, "led on"))
+		if(ledTaskHandle != NULL && prvTopicEquals(data->topicName, LedTopic) &&
+			prvPayloadEquals(data->message, "led on"))
 			xTaskNotify(ledTaskHandle, 1, eSetValueWithOverwrite);
-		else if(prvPayloadEquals(data->message, "led off"))
+		else if(ledTaskHandle != NULL && prvTopicEquals(data->topicName, LedTopic) &&
+			prvPayloadEquals(data->message, "led off"))
 			xTaskNotify(ledTaskHandle, 0, eSetValueWithOverwrite);
 	}
 }
@@ -397,19 +454,21 @@ static void prvMQTTEchoTask(void *pvParameters)
 {
 	KeyEvent key = {0};
 	CanFrame can_frame = {0};
-	MQTTClient client;
+	MQTTClient client = {0};
 	Network network = {0};
 	unsigned char sendbuf[512];
 	unsigned char readbuf[512];
 	int rc = 0;
 	MQTTPacket_connectData connectData = MQTTPacket_connectData_initializer;
-	char* address = "www.yanzmain.com.cn";
+	char *address = "www.yanzmain.com.cn";
 	ReconnState state = RECONN_INIT;
 
 	(void)pvParameters;
 	printf("[MQTT] Task started\r\n");
 
 	/* 一次性配置 MQTT 连接参数（每次重连前复用） */
+	prvInitClientId();
+	printf("[MQTT] Client ID: %s\r\n", clientID);
 	connectData.MQTTVersion = 3;
 	connectData.clientID.cstring = (char*)clientID;
 	connectData.username.cstring = (char*)username;
@@ -480,9 +539,17 @@ static void prvMQTTEchoTask(void *pvParameters)
 			}
 			if(rc == 0)
 			{
-				printf("[MQTT] Subscribe OK, entering RUNNING\r\n");
-				prvPublishGatewayStatusSnapshot(&client);
 				state = RECONN_RUNNING;
+				g_mqtt_state = state;
+				rc = prvPublishGatewayStatusSnapshot(&client);
+				if(rc == 0)
+				{
+					printf("[MQTT] Subscribe OK, entering RUNNING\r\n");
+				}
+				else
+				{
+					state = RECONN_RETRY_DELAY;
+				}
 			}
 			else
 			{
@@ -495,11 +562,12 @@ static void prvMQTTEchoTask(void *pvParameters)
 		{
 			/* 按键事件：队列 → MQTT Publish */
 			if(xKeyQueue != NULL &&
-				xQueueReceive(xKeyQueue, (uint8_t*)&key, 10) == pdPASS)
+				xQueuePeek(xKeyQueue, &key, 10) == pdPASS)
 			{
 				MQTTMessage message;
 				char payload[128];
 
+				memset(&message, 0, sizeof(message));
 				message.qos = QOS0;
 				message.retained = 0;
 				message.payload = payload;
@@ -513,32 +581,54 @@ static void prvMQTTEchoTask(void *pvParameters)
 				if(rc != 0)
 				{
 					printf("[MQTT] Publish failed (rc=%d)\r\n", rc);
+					state = RECONN_RETRY_DELAY;
+					break;
 				}
 				else
 				{
 					printf("[MQTT] Key event published -> %s\r\n", VehicleKeyTopic);
 				}
 
-				(void)MQTTPublish(&client, KeyTopic, &message);
+				(void)xQueueReceive(xKeyQueue, &key, 0);
+				rc = MQTTPublish(&client, KeyTopic, &message);
+				if(rc != 0)
+				{
+					state = RECONN_RETRY_DELAY;
+					break;
+				}
 			}
 
 			while(xCanRxQueue != NULL &&
-				xQueueReceive(xCanRxQueue, &can_frame, 0) == pdPASS)
+				xQueuePeek(xCanRxQueue, &can_frame, 0) == pdPASS)
 			{
 				if(can_frame.id != CAN_ID_GATEWAY_HEARTBEAT &&
 					can_frame.id != CAN_ID_SLAVE_HEARTBEAT)
 				{
-					printf("[MQTT] CAN RX dequeued for uplink: id=0x%03lX dlc=%u data0=0x%02X\r\n",
+					printf("[MQTT] CAN RX ready for uplink: id=0x%03lX dlc=%u data0=0x%02X\r\n",
 						(unsigned long)can_frame.id,
 						(unsigned)can_frame.dlc,
 						(unsigned)can_frame.data[0]);
-					prvPublishCanFrame(&client, &can_frame);
+					if(prvPublishCanFrame(&client, &can_frame) != 0)
+					{
+						state = RECONN_RETRY_DELAY;
+						break;
+					}
 				}
+				(void)xQueueReceive(xCanRxQueue, &can_frame, 0);
+			}
+
+			if(state != RECONN_RUNNING)
+			{
+				break;
 			}
 
 			if(g_can_status_dirty != 0U)
 			{
-				prvPublishGatewayStatusSnapshot(&client);
+				if(prvPublishGatewayStatusSnapshot(&client) != 0)
+				{
+					state = RECONN_RETRY_DELAY;
+					break;
+				}
 			}
 
 #if !defined(MQTT_TASK)
@@ -560,7 +650,10 @@ static void prvMQTTEchoTask(void *pvParameters)
 				(unsigned long)g_mqtt_reconn_count);
 
 			/* 清理 MQTT 和 TCP 连接上下文 */
-			MQTTDisconnect(&client);
+			if(MQTTIsConnected(&client))
+			{
+				(void)MQTTDisconnect(&client);
+			}
 			NetworkDisconnect(&network);
 			/* 如果底层驱动支持 WiFi 断开，可在此处调用 */
 

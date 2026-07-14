@@ -135,13 +135,21 @@ STM32F103 从节点
 {"cmd":"body_ctrl","lamp":true,"hazard":false,"fan":true}
 ```
 
+控制命令校验规则：
+
+- `bcm_ctrl/body_ctrl/get_status/clear_dtc` 只在上述两个 BCM 控制 Topic 生效
+- `lamp`、`hazard`、`fan` 必须全部提供，且必须是 JSON 布尔值
+- `seq` 可选；未提供时由网关自动生成
+- 缺字段、字段类型错误或发到旧 LED Topic 的 BCM 命令会被拒绝，不会发送 CAN 帧
+- MQTT Client ID 由 STM32 UID 生成，多块网关连接同一 Broker 时不会使用相同会话 ID
+
 ## 主状态 Topic
 
 ```text
 /vehicle/bcm/status
 ```
 
-状态分两类：
+状态包含节点状态、诊断状态和从节点执行反馈：
 
 ### 1. node_status
 
@@ -149,20 +157,41 @@ STM32F103 从节点
 {
   "src":"bcm",
   "frame":"node_status",
-  "node_mode":1,
+  "gateway_mode":1,
+  "slave_mode":1,
   "output_mask":1,
   "lamp":true,
   "hazard":false,
   "fan":false,
-  "can_tx_cnt":12,
-  "can_rx_cnt":10,
-  "last_rx_id":256,
-  "mqtt_state":4,
-  "mqtt_reconn_cnt":0
+  "last_cmd_seq":12,
+  "last_status_seq":12,
+  "seq_ok":true,
+  "pending_active":false,
+  "dtc_mask":0,
+  "last_dtc":0,
+  "slave_online":true,
+  "mqtt_state":4
 }
 ```
 
-### 2. body_status
+### 2. diag_status
+
+```json
+{
+  "src":"bcm",
+  "frame":"diag_status",
+  "can_tx":20,
+  "can_rx":18,
+  "can_tx_fail":0,
+  "cmd_drop":0,
+  "isr_drop":0,
+  "uplink_drop":0,
+  "net_rx_drop":0,
+  "mqtt_reconn":0
+}
+```
+
+### 3. body_status
 
 ```json
 {
@@ -172,7 +201,8 @@ STM32F103 从节点
   "lamp":true,
   "hazard":false,
   "fan":false,
-  "node_mode":1
+  "node_mode":1,
+  "seq":12
 }
 ```
 
@@ -420,4 +450,3 @@ LED 为低电平点亮，接法：
 3. 为 F103 增加本地输入状态并通过 `BODY_STATUS` 反馈
 4. 进一步规范 `BCM` 状态语义
 5. 如果有必要，再考虑更深的诊断/故障管理功能
-

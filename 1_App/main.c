@@ -5,6 +5,7 @@
 
 #include "main.h"
 #include "dev_io.h"
+#include "driver_net.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include <stdio.h>
@@ -114,6 +115,8 @@ static void vDiagnosticTask(void *pvParameters)
 			(unsigned long)g_can_cmd_drop_count,
 			(unsigned long)g_can_isr_drop_count,
 			(unsigned long)g_can_uplink_drop_count);
+		printf("NET RX drops: %lu\n",
+			(unsigned long)Driver_Net_GetRxDropCount());
 		printf("CAN slave:    online=%u timeout=%lu age=%lu ms\n",
 			(unsigned)g_can_slave_online,
 			(unsigned long)g_can_slave_timeout_count,
